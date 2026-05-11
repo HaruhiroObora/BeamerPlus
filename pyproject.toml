@@ -1,0 +1,6 @@
+[project]
+name = "beamerplus"
+version = "0.1.0"
+
+[project.gui-scripts]
+beamerplus = "beamerplus.main:main"
