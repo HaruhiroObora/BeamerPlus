@@ -81,7 +81,101 @@ class PdfReader:
         idx = self._resolve_index(index)
         if idx is None:
             return None
-        return self.notes.get(idx, "")
+        # 1. ユーザーが手動編集・保存したノート（JSON）があればそれを優先
+        if idx in self.notes and self.notes[idx]:
+            return self.notes[idx]
+        # 2. なければ PDF 埋め込みノート（2画面ノートテキストまたはアノテーション）を返す
+        return self.get_embedded_note(idx)
+
+    def is_dual_screen_page(self, index: str | int) -> bool:
+        """ページが左右または上下の2画面（スライド＋ノート）形式か判定"""
+        page = self.get_page(index)
+        if page is None:
+            return False
+        rect = page.rect
+        # 左右2画面 (show notes on second screen=right など)
+        if rect.width > rect.height * 2.0:
+            return True
+        # 上下2画面 (show notes on second screen=bottom など)
+        if rect.height > rect.width * 1.1:
+            return True
+        return False
+
+    def get_embedded_note(self, index: str | int) -> str:
+        """
+        PDFページからBeamerの埋め込みノート（2画面レイアウトのノート側テキスト、またはアノテーション注釈）を抽出する
+        """
+        idx = self._resolve_index(index)
+        if idx is None:
+            return ""
+
+        page = self.document[idx]
+        rect = page.rect
+        extracted_texts: list[str] = []
+
+        # 1. 左右2画面形式 (show notes on second screen=right など) -> 右半分がノート領域
+        if rect.width > rect.height * 2.0:
+            notes_clip = pymupdf.Rect(rect.width / 2.0, 0, rect.width, rect.height)
+            txt = page.get_text("text", clip=notes_clip).strip()
+            if txt:
+                extracted_texts.append(txt)
+
+        # 2. 上下2画面形式 (show notes on second screen=bottom など) -> 下半分がノート領域
+        elif rect.height > rect.width * 1.1:
+            notes_clip = pymupdf.Rect(0, rect.height / 2.0, rect.width, rect.height)
+            txt = page.get_text("text", clip=notes_clip).strip()
+            if txt:
+                extracted_texts.append(txt)
+
+        # 3. PDF アノテーション (/Text, /FreeText 注釈)
+        annots = page.annots()
+        if annots:
+            for a in annots:
+                content = a.info.get("content", "").strip()
+                if content and content not in extracted_texts:
+                    extracted_texts.append(content)
+
+        return "\n\n".join(extracted_texts)
+
+    def get_embedded_note_image(
+        self, index: str | int, size: QSize | None = None, dpi: int = DEFAULT_DPI
+    ) -> QPixmap | None:
+        """
+        2画面レイアウトの場合、ノート側の高精細レンダリング画像を取得する
+        """
+        idx = self._resolve_index(index)
+        if idx is None:
+            return None
+
+        cache_key = (idx, dpi, "note_image")
+        if cache_key in self._image_cache:
+            pixmap = self._image_cache[cache_key]
+        else:
+            page = self.document[idx]
+            rect = page.rect
+            if rect.width > rect.height * 2.0:
+                notes_clip = pymupdf.Rect(rect.width / 2.0, 0, rect.width, rect.height)
+            elif rect.height > rect.width * 1.1:
+                notes_clip = pymupdf.Rect(0, rect.height / 2.0, rect.width, rect.height)
+            else:
+                return None
+
+            pix = page.get_pixmap(clip=notes_clip, dpi=dpi)
+            fmt = QImage.Format.Format_RGBA8888 if pix.alpha else QImage.Format.Format_RGB888
+            qimage = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt)
+            pixmap = QPixmap.fromImage(qimage)
+            self._image_cache[cache_key] = pixmap
+
+        if size is not None and pixmap is not None:
+            return pixmap.scaled(size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        return pixmap
+
+    def has_embedded_note(self, index: str | int) -> bool:
+        """指定ページに埋め込みノート（テキストまたは2画面画像）が存在するか"""
+        if self.is_dual_screen_page(index):
+            return True
+        note_txt = self.get_embedded_note(index)
+        return bool(note_txt.strip())
 
     def save_note(self, index: str | int, note: str) -> None:
         idx = self._resolve_index(index)
@@ -113,8 +207,13 @@ class PdfReader:
         pix = page.get_pixmap(dpi=dpi)
         fmt = QImage.Format.Format_RGBA8888 if pix.alpha else QImage.Format.Format_RGB888
         qimage = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt)
-        if auto_crop and pix.width > pix.height * CROP_THRESHOLD:
-            qimage = qimage.copy(QRect(0, 0, qimage.width() // 2, qimage.height()))
+        if auto_crop:
+            # 左右2画面形式 (show notes on second screen=right) -> 左半分がスライド
+            if pix.width > pix.height * 2.0:
+                qimage = qimage.copy(QRect(0, 0, qimage.width() // 2, qimage.height()))
+            # 上下2画面形式 (show notes on second screen=bottom) -> 上半分がスライド
+            elif pix.height > pix.width * 1.1:
+                qimage = qimage.copy(QRect(0, 0, qimage.width(), qimage.height() // 2))
 
         if size is None:
             qpixmap = QPixmap.fromImage(qimage)

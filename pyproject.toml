@@ -1,10 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "beamerplus"
 version = "0.1.0"
+description = "A dual-screen presenter view tool for LaTeX/Beamer PDF slides with stylus drawing and Markdown notes"
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = [
     "PySide6>=6.5.0",
     "pymupdf>=1.22.0",
 ]
 
-[project.gui-scripts]
+[project.scripts]
 beamerplus = "beamerplus.main:main"
+
+[project.gui-scripts]
+beamerplus-gui = "beamerplus.main:main"
