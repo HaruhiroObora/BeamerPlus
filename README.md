@@ -71,5 +71,94 @@ beamerplus
 
 ---
 
+## デスクトップショートカットの追加
+
+ターミナルを開かずにアイコンのダブルクリックや、PDF ファイルのドラッグ＆ドロップから起動できるように、各 OS でデスクトップショートカットを作成できます。
+
+### 🐧 Linux (Ubuntu, Debian, Fedora, Arch 等)
+
+デスクトップエントリーファイル（`.desktop`）を作成することで、アプリメニューやデスクトップからワンクリックで起動できるようになります。
+
+1. **エントリーファイルの作成**:
+   ターミナルで以下のコマンドを実行します：
+   ```bash
+   mkdir -p ~/.local/share/applications
+   cat << 'EOF' > ~/.local/share/applications/beamerplus.desktop
+   [Desktop Entry]
+   Version=1.0
+   Type=Application
+   Name=BeamerPlus
+   Comment=LaTeX/Beamer PDF Presenter View
+   Exec=beamerplus %f
+   Icon=x-office-presentation
+   Terminal=false
+   Categories=Office;Presentation;
+   MimeType=application/pdf;
+   EOF
+   ```
+2. **デスクトップにアイコンを置く場合**:
+   ```bash
+   cp ~/.local/share/applications/beamerplus.desktop ~/Desktop/
+   chmod +x ~/Desktop/beamerplus.desktop
+   ```
+   ※ Ubuntu (GNOME) の場合、デスクトップに置いたアイコンを右クリックし、「**起動を許可する (Allow Launching)**」を選択してください。
+3. **右クリックから開く**:
+   PDF ファイルを右クリック →「別のアプリケーションで開く」から `BeamerPlus` を選択して開くことも可能になります。
+
+---
+
+### 🍎 macOS
+
+macOS 標準アプリ「Automator」を使って、PDF のドラッグ＆ドロップにも対応したアプリ（`.app`）を作成できます。
+
+1. **Automator を起動**:
+   - `Spotlight`（`Cmd + Space`）で「Automator」と入力して開きます。
+2. **書類の種類を選択**:
+   - 「新規書類」から「**アプリケーション**」を選択して「選択」をクリックします。
+3. **シェルスクリプトを追加**:
+   - 左側ライブラリの「ユーティリティ」から「**シェルスクリプトを実行**」を右側のワークフロー領域にドラッグ＆ドロップします。
+   - **入力の引き渡し方法** を「**引数として**」に変更します。
+   - スクリプト入力欄に以下を記述します：
+     ```bash
+     export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+     if [ $# -eq 0 ]; then
+         beamerplus
+     else
+         beamerplus "$1"
+     fi
+     ```
+4. **保存**:
+   - `Cmd + S` を押し、名前を `BeamerPlus`、保存先を「アプリケーション」フォルダ（またはデスクトップ）にして保存します。
+5. **使い方**:
+   - アイコンをダブルクリックで起動できるほか、PDF ファイルをこのアイコンに **ドラッグ＆ドロップ** して直接開くこともできます。
+
+---
+
+### 🪟 Windows (Windows 10 / 11)
+
+Windows 標準のショートカット機能で簡単に作成できます。
+
+1. **ショートカット作成ウィザード**:
+   - デスクトップの何もない場所で **右クリック →「新規作成」→「ショートカット」** を選択します。
+2. **コマンドの指定**:
+   - 「項目の場所を入力してください」に以下を入力して「次へ」をクリックします：
+     - **pipx でインストールした場合**:
+       ```text
+       %USERPROFILE%\.local\bin\beamerplus.exe
+       ```
+     - **pip でインストールした場合**:
+       ```text
+       python -m beamerplus.main
+       ```
+3. **名前の指定**:
+   - ショートカットの名前を「`BeamerPlus`」にして「完了」をクリックします。
+4. **アイコンの変更（お好みで）**:
+   - 作成されたショートカットを右クリック →「プロパティ」を開きます。
+   - 「ショートカット」タブの「アイコンの変更」から、お好みのアイコンを選択して「OK」をクリックします。
+5. **便利な使い方**:
+   - スライド PDF ファイルをこのデスクトップアイコン上に **ドラッグ＆ドロップ** すると、該当スライドを直接開いて起動できます。
+
+---
+
 ## ライセンス
 MIT License
