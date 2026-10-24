@@ -114,6 +114,9 @@ class NotePanel(QWidget):
         self.btn_edit.clicked.connect(self._toggle_edit_mode)
         tb_layout.addWidget(self.btn_edit)
 
+        for btn in (self.btn_pdf_note_view, self.btn_import_pdf_note, self.btn_edit):
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
         note_layout.addLayout(tb_layout)
 
         # スタックウィジェット (index 0: 編集, index 1: プレビュー, index 2: PDFノートスライド画面)

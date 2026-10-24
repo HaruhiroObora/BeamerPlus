@@ -171,6 +171,14 @@ class SimpleView(QWidget):
         self.btn_next.clicked.connect(self.controller.next_page)
         bar_layout.addWidget(self.btn_next)
 
+        # 全ボタン・スライダーのフォーカスを無効化（矢印キー操作がボタンに吸われないようにする）
+        for widget in (
+            self.btn_pointer, self.btn_pen, self.btn_highlighter, self.btn_eraser,
+            self.btn_eraser_mode, self.btn_line, self.btn_color, self.size_slider,
+            self.btn_undo, self.btn_clear, self.btn_prev, self.btn_next
+        ):
+            widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
         return bar
 
     def _on_tool_btn_clicked(self, tool_name: str):

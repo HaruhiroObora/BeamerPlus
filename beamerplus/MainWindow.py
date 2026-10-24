@@ -1,8 +1,9 @@
 import os
-from PySide6.QtCore import Qt, QTimer, QTime
+from PySide6.QtCore import Qt, QTimer, QTime, QEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QFileDialog, QMessageBox, QToolBar, QPushButton, QLabel, QFrame
+    QFileDialog, QMessageBox, QToolBar, QPushButton, QLabel, QFrame,
+    QApplication
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 
@@ -233,6 +234,19 @@ class MainWindow(QMainWindow):
         self.btn_blank.clicked.connect(self.toggle_blank_screen)
         self.main_toolbar.addWidget(self.btn_blank)
 
+        # ツールバーの全ボタンからフォーカスを外す（クリック後に矢印キーが吸われないようにする）
+        for btn in (
+            btn_open, self.btn_toggle_notes, self.btn_toggle_thumbs,
+            self.btn_timer_toggle, btn_timer_reset, btn_viewer, self.btn_blank
+        ):
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        # アプリケーション全体のキーイベントフィルターを登録
+        # （ボタンやスライダー等の操作後でも、ノート編集中でなければ矢印キー等で確実にスライド操作可能にする）
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self)
+
     def _tb_btn_style(self) -> str:
         return (
             "QPushButton { background-color: #3e3e42; color: #ffffff; border: 1px solid #555555; border-radius: 3px; padding: 4px 10px; font-size: 12px; }"
@@ -377,6 +391,26 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "保存完了", "ノートをファイルに保存しました。")
             except Exception as e:
                 QMessageBox.warning(self, "エラー", f"ノートの保存に失敗しました:\n{str(e)}")
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.KeyPress:
+            # ノートエディタ編集中は通常の文字入力・カーソル移動を最優先
+            if hasattr(self, "note_panel") and self.note_panel.editor.hasFocus():
+                return super().eventFilter(watched, event)
+
+            key = event.key()
+            if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space):
+                self.controller.next_page()
+                return True
+            elif key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
+                self.controller.prev_page()
+                return True
+            elif key == Qt.Key.Key_B:
+                if self.viewer:
+                    self.viewer.toggle_blank()
+                return True
+
+        return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event):
         key = event.key()
