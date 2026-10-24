@@ -30,6 +30,8 @@ class SlideCanvas(QWidget):
         self.controller.strokes_updated.connect(self._on_strokes_updated)
         self.controller.tool_size_changed.connect(self._on_tool_size_changed)
         self.controller.line_mode_changed.connect(self._on_line_mode_changed)
+        self.controller.eraser_mode_changed.connect(self._on_eraser_mode_changed)
+        self.controller.color_changed.connect(self._on_color_changed)
 
         self.pointer_pos: tuple[float, float] | None = None
         self.is_pointer_visible: bool = False
@@ -140,6 +142,12 @@ class SlideCanvas(QWidget):
     def _on_line_mode_changed(self, is_line: bool):
         self.update()
 
+    def _on_eraser_mode_changed(self, mode: str):
+        self.update()
+
+    def _on_color_changed(self, tool_name: str, color: str):
+        self.update()
+
     # ==========================================
     # Wacom / スタイラスペン入力イベント処理
     # ==========================================
@@ -153,11 +161,13 @@ class SlideCanvas(QWidget):
 
         # 1. 消しゴム機能（ペン尻 または 消しゴムツール選択時）
         if is_eraser or tool == "eraser":
+            rect = self._get_slide_rect()
+            aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
             eraser_size = self.controller.get_tool_size("eraser")
-            threshold = max(0.012, eraser_size * 0.001)
+            threshold = max(0.008, eraser_size * 0.001)
 
             if pressure > 0.0 and norm is not None:
-                self.controller.erase_strokes_near(norm[0], norm[1], threshold=threshold)
+                self.controller.erase_at_point(norm[0], norm[1], threshold=threshold, aspect_ratio=aspect_ratio)
             self.hover_pos = norm
             self.update()
             event.accept()
@@ -237,9 +247,11 @@ class SlideCanvas(QWidget):
             if tool in ("pen", "highlighter"):
                 self.controller.begin_stroke(norm[0], norm[1], pressure=1.0)
             elif tool == "eraser":
+                rect = self._get_slide_rect()
+                aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
                 eraser_size = self.controller.get_tool_size("eraser")
-                threshold = max(0.012, eraser_size * 0.001)
-                self.controller.erase_strokes_near(norm[0], norm[1], threshold=threshold)
+                threshold = max(0.008, eraser_size * 0.001)
+                self.controller.erase_at_point(norm[0], norm[1], threshold=threshold, aspect_ratio=aspect_ratio)
             elif tool == "hand":
                 self.controller.next_page()
             elif tool == "pointer":
@@ -258,9 +270,11 @@ class SlideCanvas(QWidget):
                 self.controller.update_pointer(norm[0], norm[1], True)
             elif tool == "eraser":
                 if event.buttons() & Qt.MouseButton.LeftButton:
+                    rect = self._get_slide_rect()
+                    aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
                     eraser_size = self.controller.get_tool_size("eraser")
-                    threshold = max(0.012, eraser_size * 0.001)
-                    self.controller.erase_strokes_near(norm[0], norm[1], threshold=threshold)
+                    threshold = max(0.008, eraser_size * 0.001)
+                    self.controller.erase_at_point(norm[0], norm[1], threshold=threshold, aspect_ratio=aspect_ratio)
                 self.hover_pos = norm
                 self.update()
             elif tool in ("pen", "highlighter"):
@@ -338,21 +352,43 @@ class SlideCanvas(QWidget):
             hx = rect.left() + self.hover_pos[0] * rect.width()
             hy = rect.top() + self.hover_pos[1] * rect.height()
             size = self.controller.get_tool_size("eraser")
-            eraser_r = max(8.0, base_dim * (size * 0.001))
-            eraser_pen = QPen(QColor(255, 120, 120, 220), 1.5, Qt.PenStyle.DashLine)
-            painter.setPen(eraser_pen)
-            painter.setBrush(QBrush(QColor(255, 255, 255, 25)))
+            eraser_r = max(6.0, base_dim * (size * 0.001))
+
+            if self.controller.eraser_mode == "partial":
+                # 通常消しゴム: くり抜く範囲を示す実線円＋半透明塗り
+                eraser_pen = QPen(QColor(255, 120, 120, 240), 1.5, Qt.PenStyle.SolidLine)
+                painter.setPen(eraser_pen)
+                painter.setBrush(QBrush(QColor(255, 100, 100, 45)))
+            else:
+                # オブジェクト消しゴム: 接触判定を示す点線円
+                eraser_pen = QPen(QColor(255, 160, 160, 200), 1.2, Qt.PenStyle.DashLine)
+                painter.setPen(eraser_pen)
+                painter.setBrush(QBrush(QColor(255, 255, 255, 20)))
+
             painter.drawEllipse(QPointF(hx, hy), eraser_r, eraser_r)
 
-        # ホバー時カーソル（手元画面のみ、ペン先の位置がわかる薄い円）
+        # ホバー時カーソル（手元画面のみ、ペン先の位置・太さを示すペンの色で塗りつぶした丸）
         if self.controller.current_tool in ("pen", "highlighter") and self.hover_pos:
             hx = rect.left() + self.hover_pos[0] * rect.width()
             hy = rect.top() + self.hover_pos[1] * rect.height()
             current_size = self.controller.get_current_tool_size()
             curr_r = max(3.0, (base_dim * (current_size * 0.001)) / 2.0)
-            hover_pen = QPen(QColor(255, 255, 255, 180), 1.2, Qt.PenStyle.DashLine)
-            painter.setPen(hover_pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            tool_color = self.controller.get_tool_color(self.controller.current_tool)
+            fill_color = QColor(tool_color)
+            if self.controller.current_tool == "highlighter":
+                # 蛍光ペン: 文字を隠さない適度な透明度＋輪郭線
+                fill_color.setAlphaF(0.65)
+                border_color = QColor(tool_color).darker(120)
+                border_color.setAlphaF(0.9)
+            else:
+                # 通常ペン: ペンの色でしっかり塗りつぶし
+                fill_color.setAlphaF(0.9)
+                border_color = QColor(tool_color).darker(115)
+                border_color.setAlphaF(1.0)
+
+            painter.setPen(QPen(border_color, 1.2, Qt.PenStyle.SolidLine))
+            painter.setBrush(QBrush(fill_color))
             painter.drawEllipse(QPointF(hx, hy), curr_r, curr_r)
 
         # レーザーポインタ描画

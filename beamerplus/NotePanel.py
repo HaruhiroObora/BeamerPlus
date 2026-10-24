@@ -40,7 +40,7 @@ class NotePanel(QWidget):
         ph_layout.setContentsMargins(12, 0, 10, 0)
 
         self.lbl_title = QLabel("📝 スライドノート")
-        self.lbl_title.setStyleSheet("color: #e0e0e0; font-size: 12px; font-weight: bold;")
+        self.lbl_title.setStyleSheet("color: #e0e0e0; font-size: 12px;")
         ph_layout.addWidget(self.lbl_title)
         ph_layout.addStretch()
 
@@ -63,7 +63,7 @@ class NotePanel(QWidget):
         next_layout.setSpacing(4)
 
         next_header = QLabel("次のスライド")
-        next_header.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold;")
+        next_header.setStyleSheet("color: #888888; font-size: 11px;")
         next_layout.addWidget(next_header)
 
         self.next_slide_image = QLabel()
@@ -137,7 +137,7 @@ class NotePanel(QWidget):
         return (
             "QPushButton { background-color: #333336; color: #ffffff; border: 1px solid #444448; border-radius: 3px; padding: 3px 10px; font-size: 11px; }"
             "QPushButton:hover { background-color: #44444a; }"
-            "QPushButton:checked { background-color: #007acc; border-color: #0098ff; font-weight: bold; }"
+            "QPushButton:checked { background-color: #007acc; border-color: #0098ff; }"
         )
 
     def _toggle_edit_mode(self):

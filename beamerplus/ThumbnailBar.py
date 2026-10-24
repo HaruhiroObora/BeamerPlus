@@ -44,7 +44,7 @@ class ThumbnailItem(QFrame):
             self.setStyleSheet(
                 "#ThumbnailItem { border: 2px solid #007acc; border-radius: 4px; background-color: #2a2d32; }"
             )
-            self.caption_label.setStyleSheet("font-size: 11px; font-weight: bold; color: #4fc3f7;")
+            self.caption_label.setStyleSheet("font-size: 11px; color: #4fc3f7;")
         else:
             self.setStyleSheet(
                 "#ThumbnailItem { border: 2px solid transparent; border-radius: 4px; background-color: transparent; }"

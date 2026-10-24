@@ -1,6 +1,10 @@
 [project]
 name = "beamerplus"
 version = "0.1.0"
+dependencies = [
+    "PySide6>=6.5.0",
+    "pymupdf>=1.22.0",
+]
 
 [project.gui-scripts]
 beamerplus = "beamerplus.main:main"

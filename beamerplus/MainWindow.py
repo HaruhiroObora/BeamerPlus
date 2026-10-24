@@ -124,6 +124,12 @@ class MainWindow(QMainWindow):
         self.act_toggle_thumbnails.triggered.connect(self.toggle_thumbnail_bar)
         view_menu.addAction(self.act_toggle_thumbnails)
 
+        self.act_toggle_toolbar = QAction("メインツールバーの表示/非表示", self)
+        self.act_toggle_toolbar.setCheckable(True)
+        self.act_toggle_toolbar.setChecked(True)
+        self.act_toggle_toolbar.triggered.connect(self.toggle_main_toolbar)
+        view_menu.addAction(self.act_toggle_toolbar)
+
         view_menu.addSeparator()
 
         # 画質設定サブメニュー
@@ -162,16 +168,17 @@ class MainWindow(QMainWindow):
         pres_menu.addAction(act_blank)
 
         # 上部ツールバー
-        toolbar = QToolBar("メインツールバー")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+        self.main_toolbar = QToolBar("メインツールバー")
+        self.main_toolbar.setMovable(False)
+        self.main_toolbar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+        self.addToolBar(self.main_toolbar)
 
         btn_open = QPushButton("📁 開く")
         btn_open.setStyleSheet(self._tb_btn_style())
         btn_open.clicked.connect(self.open_file_dialog)
-        toolbar.addWidget(btn_open)
+        self.main_toolbar.addWidget(btn_open)
 
-        toolbar.addSeparator()
+        self.main_toolbar.addSeparator()
 
         # 表示トグルボタン: ノート
         self.btn_toggle_notes = QPushButton("📝 ノート")
@@ -180,7 +187,7 @@ class MainWindow(QMainWindow):
         self.btn_toggle_notes.setStyleSheet(self._tb_btn_style())
         self.btn_toggle_notes.setToolTip("ノートパネルの表示/非表示 (Ctrl+N)")
         self.btn_toggle_notes.clicked.connect(self.toggle_note_panel)
-        toolbar.addWidget(self.btn_toggle_notes)
+        self.main_toolbar.addWidget(self.btn_toggle_notes)
 
         # 表示トグルボタン: スライド一覧
         self.btn_toggle_thumbs = QPushButton("🎞️ スライド一覧")
@@ -189,44 +196,48 @@ class MainWindow(QMainWindow):
         self.btn_toggle_thumbs.setStyleSheet(self._tb_btn_style())
         self.btn_toggle_thumbs.setToolTip("スライド一覧バーの表示/非表示 (Ctrl+T)")
         self.btn_toggle_thumbs.clicked.connect(self.toggle_thumbnail_bar)
-        toolbar.addWidget(self.btn_toggle_thumbs)
+        self.main_toolbar.addWidget(self.btn_toggle_thumbs)
 
-        toolbar.addSeparator()
+        self.main_toolbar.addSeparator()
 
         # タイマー表示
         self.lbl_timer = QLabel("⏱️ 00:00:00")
-        self.lbl_timer.setStyleSheet("color: #4fc3f7; font-size: 13px; font-weight: bold; margin-left: 8px;")
-        toolbar.addWidget(self.lbl_timer)
+        self.lbl_timer.setStyleSheet("color: #4fc3f7; font-size: 13px; margin-left: 8px;")
+        self.lbl_timer.setFixedWidth(105)
+        self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.main_toolbar.addWidget(self.lbl_timer)
 
-        btn_timer_toggle = QPushButton("▶ 開始")
-        btn_timer_toggle.setStyleSheet(self._tb_btn_style())
-        btn_timer_toggle.clicked.connect(lambda: self._toggle_timer(btn_timer_toggle))
-        toolbar.addWidget(btn_timer_toggle)
+        self.btn_timer_toggle = QPushButton("▶ 開始")
+        self.btn_timer_toggle.setStyleSheet(self._tb_btn_style())
+        self.btn_timer_toggle.setFixedWidth(100)
+        self.btn_timer_toggle.clicked.connect(lambda: self._toggle_timer(self.btn_timer_toggle))
+        self.main_toolbar.addWidget(self.btn_timer_toggle)
 
         btn_timer_reset = QPushButton("↺ リセット")
         btn_timer_reset.setStyleSheet(self._tb_btn_style())
         btn_timer_reset.clicked.connect(self._reset_timer)
-        toolbar.addWidget(btn_timer_reset)
+        self.main_toolbar.addWidget(btn_timer_reset)
 
-        toolbar.addSeparator()
+        self.main_toolbar.addSeparator()
 
         # プロジェクタ画面制御ボタン
         btn_viewer = QPushButton("📽️ プロジェクタ画面")
         btn_viewer.setStyleSheet(self._tb_btn_style())
         btn_viewer.clicked.connect(self.toggle_viewer_window)
-        toolbar.addWidget(btn_viewer)
+        self.main_toolbar.addWidget(btn_viewer)
 
         self.btn_blank = QPushButton("⬛ 暗転 (B)")
         self.btn_blank.setStyleSheet(self._tb_btn_style())
+        self.btn_blank.setFixedWidth(120)
         self.btn_blank.setToolTip("プロジェクタ画面を一時的に真っ黒にします (B)")
         self.btn_blank.clicked.connect(self.toggle_blank_screen)
-        toolbar.addWidget(self.btn_blank)
+        self.main_toolbar.addWidget(self.btn_blank)
 
     def _tb_btn_style(self) -> str:
         return (
             "QPushButton { background-color: #3e3e42; color: #ffffff; border: 1px solid #555555; border-radius: 3px; padding: 4px 10px; font-size: 12px; }"
             "QPushButton:hover { background-color: #505054; }"
-            "QPushButton:checked { background-color: #007acc; border-color: #0098ff; font-weight: bold; }"
+            "QPushButton:checked { background-color: #007acc; border-color: #0098ff; }"
         )
 
     def set_render_dpi(self, dpi: int):
@@ -248,6 +259,16 @@ class MainWindow(QMainWindow):
         self.thumbnail_bar.setVisible(is_visible)
         self.btn_toggle_thumbs.setChecked(is_visible)
         self.act_toggle_thumbnails.setChecked(is_visible)
+
+    def toggle_main_toolbar(self):
+        """メインツールバーの表示/非表示切り替え"""
+        is_visible = not self.main_toolbar.isVisible()
+        self.main_toolbar.setVisible(is_visible)
+        self.act_toggle_toolbar.setChecked(is_visible)
+
+    def createPopupMenu(self):
+        """ツールバー右クリック時のデフォルトコンテキストメニューを無効化"""
+        return None
 
     def toggle_viewer_window(self):
         if not self.viewer:
@@ -272,7 +293,7 @@ class MainWindow(QMainWindow):
             if is_blank:
                 self.btn_blank.setText("⬛ 暗転中 (B)")
                 self.btn_blank.setStyleSheet(
-                    "QPushButton { background-color: #b71c1c; color: #ffffff; border: 1px solid #f44336; border-radius: 3px; padding: 4px 10px; font-size: 12px; font-weight: bold; }"
+                    "QPushButton { background-color: #b71c1c; color: #ffffff; border: 1px solid #f44336; border-radius: 3px; padding: 4px 10px; font-size: 12px; }"
                 )
             else:
                 self.btn_blank.setText("⬛ 暗転 (B)")
@@ -295,7 +316,13 @@ class MainWindow(QMainWindow):
         self.lbl_timer.setText(f"⏱️ {self.presentation_time.toString('hh:mm:ss')}")
 
     def open_file_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "PDFスライドを開く", "", "PDFファイル (*.pdf)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "PDFスライドを開く",
+            "",
+            "PDFファイル (*.pdf)",
+            options=QFileDialog.Option.DontUseNativeDialog
+        )
         if path:
             self.load_pdf(path)
 

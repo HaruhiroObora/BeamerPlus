@@ -13,6 +13,114 @@ class Stroke:
     points: list[tuple[float, float, float]] = field(default_factory=list)
 
 
+def stroke_intersects_circle(stroke: Stroke, center: tuple[float, float], r: float, aspect_ratio: float = 1.0) -> bool:
+    """ストローク（点列および線分）が円 (center, r) と交差するか判定"""
+    if not stroke.points:
+        return False
+    if len(stroke.points) == 1:
+        dx = (stroke.points[0][0] - center[0]) * aspect_ratio
+        dy = stroke.points[0][1] - center[1]
+        return (dx * dx + dy * dy) < (r * r)
+
+    cx, cy = center[0] * aspect_ratio, center[1]
+    r_sq = r * r
+
+    for i in range(len(stroke.points) - 1):
+        p1 = stroke.points[i]
+        p2 = stroke.points[i + 1]
+        x1, y1 = p1[0] * aspect_ratio, p1[1]
+        x2, y2 = p2[0] * aspect_ratio, p2[1]
+        dx = x2 - x1
+        dy = y2 - y1
+        l2 = dx * dx + dy * dy
+        if l2 == 0.0:
+            if ((cx - x1) ** 2 + (cy - y1) ** 2) < r_sq:
+                return True
+            continue
+        t = max(0.0, min(1.0, ((cx - x1) * dx + (cy - y1) * dy) / l2))
+        proj_x = x1 + t * dx
+        proj_y = y1 + t * dy
+        if ((cx - proj_x) ** 2 + (cy - proj_y) ** 2) < r_sq:
+            return True
+    return False
+
+
+def clip_stroke_by_circle(stroke: Stroke, center: tuple[float, float], r: float, aspect_ratio: float = 1.0) -> list[Stroke]:
+    """
+    ストロークの折れ線を消しゴム円 (center, r) で切断し、
+    円の外側に残った部分を複数のサブストロークに分割して返す（通常消しゴム用）
+    """
+    if not stroke.points or len(stroke.points) < 2:
+        return []
+
+    cx, cy = center
+    r_sq = r * r
+
+    def is_inside(p: tuple[float, float, float]) -> bool:
+        dx = (p[0] - cx) * aspect_ratio
+        dy = p[1] - cy
+        return (dx * dx + dy * dy) < r_sq
+
+    def lerp_pt(p1: tuple[float, float, float], p2: tuple[float, float, float], t: float) -> tuple[float, float, float]:
+        x = p1[0] + (p2[0] - p1[0]) * t
+        y = p1[1] + (p2[1] - p1[1]) * t
+        pr = p1[2] + (p2[2] - p1[2]) * t
+        return (x, y, pr)
+
+    result_strokes: list[Stroke] = []
+    current_points: list[tuple[float, float, float]] = []
+
+    for i in range(len(stroke.points) - 1):
+        p1 = stroke.points[i]
+        p2 = stroke.points[i + 1]
+
+        x1 = (p1[0] - cx) * aspect_ratio
+        y1 = p1[1] - cy
+        x2 = (p2[0] - cx) * aspect_ratio
+        y2 = p2[1] - cy
+
+        dx = x2 - x1
+        dy = y2 - y1
+
+        a = dx * dx + dy * dy
+        ts: list[float] = []
+        if a > 1e-12:
+            b = 2.0 * (x1 * dx + y1 * dy)
+            c = x1 * x1 + y1 * y1 - r_sq
+            disc = b * b - 4.0 * a * c
+            if disc >= 0.0:
+                s_disc = math.sqrt(disc)
+                t1 = (-b - s_disc) / (2.0 * a)
+                t2 = (-b + s_disc) / (2.0 * a)
+                if 1e-5 < t1 < 1.0 - 1e-5:
+                    ts.append(t1)
+                if 1e-5 < t2 < 1.0 - 1e-5:
+                    ts.append(t2)
+                ts.sort()
+
+        sub_pts = [p1] + [lerp_pt(p1, p2, t) for t in ts] + [p2]
+
+        for j in range(len(sub_pts) - 1):
+            sa = sub_pts[j]
+            sb = sub_pts[j + 1]
+            mid = ((sa[0] + sb[0]) / 2.0, (sa[1] + sb[1]) / 2.0, (sa[2] + sb[2]) / 2.0)
+            if not is_inside(mid):
+                if not current_points:
+                    current_points.append(sa)
+                elif current_points[-1][:2] != sa[:2]:
+                    current_points.append(sa)
+                current_points.append(sb)
+            else:
+                if len(current_points) >= 2:
+                    result_strokes.append(Stroke(stroke.color, stroke.width_ratio, stroke.opacity, current_points))
+                current_points = []
+
+    if len(current_points) >= 2:
+        result_strokes.append(Stroke(stroke.color, stroke.width_ratio, stroke.opacity, current_points))
+
+    return result_strokes
+
+
 class PresentationController(QObject):
     """
     スライド状態、描画ストローク、ポインタ位置、ツール設定を一括管理し、
@@ -38,25 +146,34 @@ class PresentationController(QObject):
     tool_size_changed = Signal(str, int)                  # tool_name, size (1 ~ 50)
     color_changed = Signal(str, str)                      # tool_name, hex_color
     line_mode_changed = Signal(bool)                      # 直線モードのON/OFF
+    eraser_mode_changed = Signal(str)                     # "partial" (通常消しゴム) / "stroke" (オブジェクト消しゴム)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.current_page: int = 0
         self.total_pages: int = 0
-        self.current_tool: str = "hand"  # 起動時は通常モード ("hand", "pointer", "pen", "highlighter", "eraser")
-        self.is_line_mode: bool = False  # 直線モードON/OFF（pen / highlighter 時に直線を描画）
+        self.current_tool: str = "hand"       # 起動時は通常モード
+        self.is_line_mode: bool = False       # 直線モードON/OFF
+        self.eraser_mode: str = "partial"     # "partial" (通常消しゴム) / "stroke" (オブジェクト消しゴム)
         
         # ページごとのストローク保存: dict[page_index, list[Stroke]]
         self.page_strokes: dict[int, list[Stroke]] = {}
         self.current_stroke: Stroke | None = None
 
-        # 各ツールのサイズ（太さ / 半径）設定 (スライダ値: 1 ~ 50)
-        # width_ratio = size * 0.001
+        # 各ツールのサイズ有効範囲 (min, max)
+        self.tool_ranges: dict[str, tuple[int, int]] = {
+            "pointer": (5, 60),
+            "pen": (1, 30),
+            "highlighter": (5, 160),  # 蛍光ペンは行全体・大きな見出しをハイライトできるように極太まで対応
+            "eraser": (5, 100),
+        }
+
+        # 各ツールのサイズ（太さ / 半径）設定 (width_ratio = size * 0.001)
         self.tool_sizes: dict[str, int] = {
             "pointer": 18,      # 半径比率: 0.018 (短辺の1.8%)
             "pen": 5,          # 線幅比率: 0.005 (短辺の0.5%)
-            "highlighter": 15,  # 線幅比率: 0.015 (短辺の1.5%)
-            "eraser": 20,       # 消去判定半径比率: 0.020 (短辺の2.0%)
+            "highlighter": 45,  # 線幅比率: 0.045 (短辺の4.5%: 一般的な文字行をしっかり覆う太さ)
+            "eraser": 25,       # 消去判定半径比率: 0.025 (短辺の2.5%)
         }
 
         # 色設定
@@ -83,7 +200,6 @@ class PresentationController(QObject):
 
     def set_tool(self, tool_name: str):
         if tool_name in ("hand", "pointer", "eraser"):
-            # 通常モードやポインタ、消しゴムに切り替えた場合は直線モードを解除
             self.set_line_mode(False)
 
         if tool_name != self.current_tool:
@@ -98,18 +214,30 @@ class PresentationController(QObject):
             self.line_mode_changed.emit(enabled)
 
     def toggle_line_mode(self):
-        # ポインタや通常モード、消しゴム時に直線ボタンが押されたら、デフォルトでペンを選択した上で直線モードへ
         if self.current_tool not in ("pen", "highlighter"):
             self.set_tool("pen")
             self.set_line_mode(True)
         else:
             self.set_line_mode(not self.is_line_mode)
 
+    def set_eraser_mode(self, mode: str):
+        if mode in ("partial", "stroke") and self.eraser_mode != mode:
+            self.eraser_mode = mode
+            self.eraser_mode_changed.emit(mode)
+
+    def toggle_eraser_mode(self):
+        new_mode = "stroke" if self.eraser_mode == "partial" else "partial"
+        self.set_eraser_mode(new_mode)
+
+    def get_tool_range(self, tool_name: str) -> tuple[int, int]:
+        return self.tool_ranges.get(tool_name, (1, 50))
+
     def get_tool_size(self, tool_name: str) -> int:
         return self.tool_sizes.get(tool_name, 5)
 
     def set_tool_size(self, tool_name: str, size: int):
-        clamped_size = max(1, min(50, size))
+        min_v, max_v = self.get_tool_range(tool_name)
+        clamped_size = max(min_v, min(max_v, size))
         self.tool_sizes[tool_name] = clamped_size
         self.tool_size_changed.emit(tool_name, clamped_size)
 
@@ -161,7 +289,6 @@ class PresentationController(QObject):
             self.stroke_added_point.emit(self.current_page, norm_x, norm_y, pressure)
 
     def update_line_endpoint(self, norm_x: float, norm_y: float, pressure: float = 1.0):
-        """直線ツールドラッグ中に終点をリアルタイム更新"""
         if self.current_stroke is not None and len(self.current_stroke.points) >= 1:
             p0 = self.current_stroke.points[0]
             self.current_stroke.points = [p0, (norm_x, norm_y, pressure)]
@@ -172,32 +299,52 @@ class PresentationController(QObject):
             self.current_stroke = None
             self.stroke_finished.emit(self.current_page)
 
-    def erase_strokes_near(self, norm_x: float, norm_y: float, threshold: float = 0.02) -> bool:
-        """指定された相対座標の近くにあるストロークを消去"""
+    def erase_at_point(self, norm_x: float, norm_y: float, threshold: float = 0.02, aspect_ratio: float = 1.0) -> bool:
+        """
+        消しゴム処理:
+        - eraser_mode == "stroke" の場合: オブジェクト消しゴム（触れたストローク全体を削除）
+        - eraser_mode == "partial" の場合: 通常消しゴム（円の範囲内のみを部分消去・分割）
+        """
         if self.current_page not in self.page_strokes or not self.page_strokes[self.current_page]:
             return False
 
-        remaining_strokes = []
-        erased = False
+        center = (norm_x, norm_y)
 
-        for stroke in self.page_strokes[self.current_page]:
-            hit = False
-            for pt in stroke.points:
-                dx = pt[0] - norm_x
-                dy = pt[1] - norm_y
-                if math.hypot(dx, dy) < threshold:
-                    hit = True
-                    break
-            if hit:
-                erased = True
-            else:
-                remaining_strokes.append(stroke)
+        if self.eraser_mode == "stroke":
+            # オブジェクト消しゴム（線分交差判定）
+            remaining_strokes = []
+            erased = False
+            for stroke in self.page_strokes[self.current_page]:
+                if stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
+                    erased = True
+                else:
+                    remaining_strokes.append(stroke)
+            if erased:
+                self.page_strokes[self.current_page] = remaining_strokes
+                self.strokes_updated.emit(self.current_page)
+                return True
+            return False
+        else:
+            # 通常消しゴム（部分消去）
+            new_page_strokes: list[Stroke] = []
+            erased_any = False
 
-        if erased:
-            self.page_strokes[self.current_page] = remaining_strokes
-            self.strokes_updated.emit(self.current_page)
-            return True
-        return False
+            for stroke in self.page_strokes[self.current_page]:
+                if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
+                    new_page_strokes.append(stroke)
+                else:
+                    erased_any = True
+                    clipped = clip_stroke_by_circle(stroke, center, threshold, aspect_ratio)
+                    new_page_strokes.extend(clipped)
+
+            if erased_any:
+                self.page_strokes[self.current_page] = new_page_strokes
+                self.strokes_updated.emit(self.current_page)
+                return True
+            return False
+
+    def erase_strokes_near(self, norm_x: float, norm_y: float, threshold: float = 0.02, aspect_ratio: float = 1.0) -> bool:
+        return self.erase_at_point(norm_x, norm_y, threshold, aspect_ratio)
 
     def clear_current_page_strokes(self):
         if self.current_page in self.page_strokes:

@@ -31,9 +31,11 @@ class SimpleView(QWidget):
         self.controller.tool_size_changed.connect(self._on_tool_size_changed)
         self.controller.line_mode_changed.connect(self._on_line_mode_changed)
         self.controller.color_changed.connect(self._on_color_changed)
+        self.controller.eraser_mode_changed.connect(self._on_eraser_mode_changed)
 
         # 初期表示の更新
         self._on_tool_changed(self.controller.current_tool)
+        self._on_eraser_mode_changed(self.controller.eraser_mode)
 
     def _create_toolbar(self) -> QWidget:
         bar = QFrame()
@@ -42,7 +44,7 @@ class SimpleView(QWidget):
             "QFrame { background-color: #252526; border-bottom: 1px solid #333333; }"
             "QPushButton, QToolButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 4px 10px; font-size: 12px; }"
             "QPushButton:hover, QToolButton:hover { background-color: #444444; }"
-            "QPushButton:checked, QToolButton:checked { background-color: #007acc; border-color: #0098ff; font-weight: bold; }"
+            "QPushButton:checked, QToolButton:checked { background-color: #007acc; border-color: #0098ff; }"
             "QLabel { color: #cccccc; font-size: 12px; }"
             "QSlider::groove:horizontal { height: 4px; background: #444448; border-radius: 2px; }"
             "QSlider::sub-page:horizontal { background: #007acc; border-radius: 2px; }"
@@ -74,9 +76,22 @@ class SimpleView(QWidget):
 
         self.btn_eraser = QPushButton("🧹 消しゴム")
         self.btn_eraser.setCheckable(True)
-        self.btn_eraser.setToolTip("ストローク消しゴム (なぞった線を消去、もう一度クリックで通常モード)")
+        self.btn_eraser.setToolTip("消しゴム (もう一度クリックで通常モード)")
         self.btn_eraser.clicked.connect(lambda: self._on_tool_btn_clicked("eraser"))
         bar_layout.addWidget(self.btn_eraser)
+
+        # 消しゴムモード切替ボタン（通常消しゴム / オブジェクト消しゴム）
+        self.btn_eraser_mode = QPushButton("通常")
+        self.btn_eraser_mode.setToolTip("消しゴムモード: 通常（なぞった部分のみ消去。クリックでオブジェクト消しゴムに切替）")
+        self.btn_eraser_mode.setStyleSheet(
+            "QPushButton { background-color: #38383c; color: #4fc3f7; border: 1px solid #555558; border-radius: 3px; padding: 2px 6px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #48484e; color: #ffffff; }"
+            "QPushButton:disabled { background-color: #2a2a2d; color: #555558; border-color: #38383c; }"
+        )
+        self.btn_eraser_mode.setFixedWidth(105)
+        self.btn_eraser_mode.clicked.connect(self.controller.toggle_eraser_mode)
+        self.btn_eraser_mode.setEnabled(False)  # 常に表示し、消しゴム選択時のみ有効化
+        bar_layout.addWidget(self.btn_eraser_mode)
 
         self.tool_buttons = {
             "pointer": self.btn_pointer,
@@ -108,19 +123,21 @@ class SimpleView(QWidget):
         # --- 共通サイズスライダー ---
         self.lbl_size_title = QLabel("太さ:")
         self.lbl_size_title.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        self.lbl_size_title.setFixedWidth(48)
+        self.lbl_size_title.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         bar_layout.addWidget(self.lbl_size_title)
 
         self.size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.size_slider.setRange(1, 40)
+        self.size_slider.setRange(1, 160)
         self.size_slider.setValue(18)
-        self.size_slider.setFixedWidth(80)
+        self.size_slider.setFixedWidth(90)
         self.size_slider.setToolTip("選択中ツールの太さ・半径を変更")
         self.size_slider.valueChanged.connect(self._on_slider_value_changed)
         bar_layout.addWidget(self.size_slider)
 
         self.lbl_size_val = QLabel("18")
-        self.lbl_size_val.setFixedWidth(20)
-        self.lbl_size_val.setStyleSheet("color: #4fc3f7; font-size: 11px; font-weight: bold;")
+        self.lbl_size_val.setFixedWidth(28)
+        self.lbl_size_val.setStyleSheet("color: #4fc3f7; font-size: 11px;")
         bar_layout.addWidget(self.lbl_size_val)
 
         # 区切り線
@@ -146,6 +163,8 @@ class SimpleView(QWidget):
         bar_layout.addWidget(self.btn_prev)
 
         self.page_label = QLabel("0 / 0")
+        self.page_label.setFixedWidth(64)
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bar_layout.addWidget(self.page_label)
 
         self.btn_next = QPushButton("次へ ▶")
@@ -168,13 +187,26 @@ class SimpleView(QWidget):
     def _on_line_mode_changed(self, is_line: bool):
         self.btn_line.setChecked(is_line)
 
+    def _on_eraser_mode_changed(self, mode: str):
+        if mode == "partial":
+            self.btn_eraser_mode.setText("通常")
+            self.btn_eraser_mode.setToolTip("消しゴムモード: 通常（なぞった部分のみ消去。クリックでオブジェクト消しゴムに切替）")
+        else:
+            self.btn_eraser_mode.setText("オブジェクト")
+            self.btn_eraser_mode.setToolTip("消しゴムモード: オブジェクト（線全体を消去。クリックで通常消しゴムに切替）")
+
     def _choose_color(self):
         # 現在アクティブなツール（蛍光ペンなら蛍光ペン、それ以外ならペン）の色を変更
         target_tool = "highlighter" if self.controller.current_tool == "highlighter" else "pen"
         current_color = self.controller.get_tool_color(target_tool)
         title = "蛍光ペンの色選択" if target_tool == "highlighter" else "ペンの色選択"
 
-        color = QColorDialog.getColor(QColor(current_color), self, title)
+        color = QColorDialog.getColor(
+            QColor(current_color),
+            self,
+            title,
+            options=QColorDialog.ColorDialogOption.DontUseNativeDialog
+        )
         if color.isValid():
             hex_color = color.name()
             self.controller.set_tool_color(target_tool, hex_color)
@@ -211,13 +243,16 @@ class SimpleView(QWidget):
             btn.setChecked(name == tool_name)
         self.btn_line.setChecked(self.controller.is_line_mode)
 
-        # 2. 色選択ボタンの更新
+        # 2. 消しゴムモード切替ボタンの有効/無効（常に表示、消しゴム選択時のみ有効）
+        self.btn_eraser_mode.setEnabled(tool_name == "eraser")
+
+        # 3. 色選択ボタンの更新
         self._update_color_button()
 
-        # 3. 直線ボタンの有効化/無効化（消しゴム時は無効）
+        # 4. 直線ボタンの有効化/無効化（消しゴム時は無効）
         self.btn_line.setEnabled(tool_name != "eraser")
 
-        # 4. スライダーを該当ツールの保持サイズに更新
+        # 5. スライダーを該当ツールの保持サイズ・範囲に更新
         if tool_name == "hand":
             self.size_slider.setEnabled(False)
             self.lbl_size_title.setText("サイズ:")
@@ -229,15 +264,19 @@ class SimpleView(QWidget):
             else:
                 self.lbl_size_title.setText("太さ:")
 
+            min_v, max_v = self.controller.get_tool_range(tool_name)
             size = self.controller.get_tool_size(tool_name)
             self.size_slider.blockSignals(True)
+            self.size_slider.setRange(min_v, max_v)
             self.size_slider.setValue(size)
             self.size_slider.blockSignals(False)
             self.lbl_size_val.setText(str(size))
 
     def _on_tool_size_changed(self, tool_name: str, size: int):
         if tool_name == self.controller.current_tool:
+            min_v, max_v = self.controller.get_tool_range(tool_name)
             self.size_slider.blockSignals(True)
+            self.size_slider.setRange(min_v, max_v)
             self.size_slider.setValue(size)
             self.size_slider.blockSignals(False)
             self.lbl_size_val.setText(str(size))
