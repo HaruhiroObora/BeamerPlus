@@ -394,8 +394,10 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.KeyPress:
-            # ノートエディタ編集中は通常の文字入力・カーソル移動を最優先
+            # ノートエディタ編集中やスライド上のテキスト入力中は通常の文字入力・カーソル移動を最優先
             if hasattr(self, "note_panel") and self.note_panel.editor.hasFocus():
+                return super().eventFilter(watched, event)
+            if hasattr(self, "slide_view") and hasattr(self.slide_view, "canvas") and hasattr(self.slide_view.canvas, "text_input") and self.slide_view.canvas.text_input.hasFocus():
                 return super().eventFilter(watched, event)
 
             key = event.key()
@@ -414,17 +416,21 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
-        # エディタ編集中でない場合のみページ送りショートカットを有効化
+        # エディタ編集中やテキスト入力中でない場合のみページ送りショートカットを有効化
+        is_typing = (
+            (hasattr(self, "note_panel") and self.note_panel.editor.hasFocus()) or
+            (hasattr(self, "slide_view") and hasattr(self.slide_view, "canvas") and hasattr(self.slide_view.canvas, "text_input") and self.slide_view.canvas.text_input.hasFocus())
+        )
         if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space):
-            if not self.note_panel.editor.hasFocus():
+            if not is_typing:
                 self.controller.next_page()
                 return
         elif key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
-            if not self.note_panel.editor.hasFocus():
+            if not is_typing:
                 self.controller.prev_page()
                 return
         elif key == Qt.Key.Key_B:
-            if not self.note_panel.editor.hasFocus() and self.viewer:
+            if not is_typing and self.viewer:
                 self.viewer.toggle_blank()
                 return
 

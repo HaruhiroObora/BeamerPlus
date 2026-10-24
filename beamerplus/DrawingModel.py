@@ -13,6 +13,32 @@ class Stroke:
     points: list[tuple[float, float, float]] = field(default_factory=list)
 
 
+@dataclass
+class TextItem:
+    text: str = ""
+    norm_x: float = 0.0          # スライド上の相対X座標 (0.0 ~ 1.0)
+    norm_y: float = 0.0          # スライド上の相対Y座標 (0.0 ~ 1.0)
+    color: str = "#e53935"       # 文字色
+    size: int = 28               # フォントサイズ指標 (短辺比率 = size * 0.0015)
+
+
+def text_intersects_circle(item: TextItem, center: tuple[float, float], r: float, aspect_ratio: float = 1.0) -> bool:
+    """テキストのバウンディングボックスが消しゴム円 (center, r) と交差するか判定"""
+    if not item.text:
+        return False
+    h = item.size * 0.0015
+    w = max(0.01, len(item.text) * (h * 0.55) / aspect_ratio)
+    x0, y0 = item.norm_x, item.norm_y
+    x1, y1 = item.norm_x + w, item.norm_y + h
+
+    cx, cy = center
+    closest_x = max(x0, min(cx, x1))
+    closest_y = max(y0, min(cy, y1))
+    dx = (cx - closest_x) * aspect_ratio
+    dy = cy - closest_y
+    return (dx * dx + dy * dy) <= (r * r)
+
+
 def stroke_intersects_circle(stroke: Stroke, center: tuple[float, float], r: float, aspect_ratio: float = 1.0) -> bool:
     """ストローク（点列および線分）が円 (center, r) と交差するか判定"""
     if not stroke.points:
@@ -141,8 +167,12 @@ class PresentationController(QObject):
     stroke_undone = Signal(int)                           # page_index
     strokes_updated = Signal(int)                         # page_index (消しゴム等での再描画)
 
+    # テキスト書き込み同期
+    text_added = Signal(int, TextItem)                    # page_index, new_text_item
+    texts_updated = Signal(int)                           # page_index (テキスト変更・消去)
+
     # ツールモード変更
-    tool_changed = Signal(str)                            # "hand", "pointer", "pen", "highlighter", "eraser"
+    tool_changed = Signal(str)                            # "hand", "pointer", "pen", "highlighter", "eraser", "text"
     tool_size_changed = Signal(str, int)                  # tool_name, size (1 ~ 50)
     color_changed = Signal(str, str)                      # tool_name, hex_color
     line_mode_changed = Signal(bool)                      # 直線モードのON/OFF
@@ -160,25 +190,34 @@ class PresentationController(QObject):
         self.page_strokes: dict[int, list[Stroke]] = {}
         self.current_stroke: Stroke | None = None
 
+        # ページごとのテキスト保存: dict[page_index, list[TextItem]]
+        self.page_texts: dict[int, list[TextItem]] = {}
+
+        # ページごとの操作履歴（Undo用）: dict[page_index, list[tuple[str, object]]]
+        self.page_history: dict[int, list[tuple[str, object]]] = {}
+
         # 各ツールのサイズ有効範囲 (min, max)
         self.tool_ranges: dict[str, tuple[int, int]] = {
             "pointer": (5, 60),
             "pen": (1, 30),
             "highlighter": (5, 160),  # 蛍光ペンは行全体・大きな見出しをハイライトできるように極太まで対応
             "eraser": (5, 100),
+            "text": (10, 80),         # テキストフォントサイズ指標
         }
 
-        # 各ツールのサイズ（太さ / 半径）設定 (width_ratio = size * 0.001)
+        # 各ツールのサイズ（太さ / 半径 / 文字サイズ）設定 (width_ratio = size * 0.001)
         self.tool_sizes: dict[str, int] = {
             "pointer": 18,      # 半径比率: 0.018 (短辺の1.8%)
             "pen": 5,          # 線幅比率: 0.005 (短辺の0.5%)
             "highlighter": 45,  # 線幅比率: 0.045 (短辺の4.5%: 一般的な文字行をしっかり覆う太さ)
             "eraser": 25,       # 消去判定半径比率: 0.025 (短辺の2.5%)
+            "text": 28,         # デフォルトフォントサイズ指標
         }
 
         # 色設定
         self.pen_color: str = "#e53935"            # ペンの色（デフォルト赤）
         self.highlighter_color: str = "#ffeb3b"    # 蛍光ペンの色（デフォルト蛍光イエロー）
+        self.text_color: str = "#e53935"           # テキストの色（デフォルト赤）
 
     def set_total_pages(self, total: int):
         self.total_pages = total
@@ -199,7 +238,7 @@ class PresentationController(QObject):
             self.set_page(self.current_page - 1)
 
     def set_tool(self, tool_name: str):
-        if tool_name in ("hand", "pointer", "eraser"):
+        if tool_name in ("hand", "pointer", "eraser", "text"):
             self.set_line_mode(False)
 
         if tool_name != self.current_tool:
@@ -250,11 +289,15 @@ class PresentationController(QObject):
     def get_tool_color(self, tool_name: str) -> str:
         if tool_name == "highlighter":
             return self.highlighter_color
+        elif tool_name == "text":
+            return self.text_color
         return self.pen_color
 
     def set_tool_color(self, tool_name: str, hex_color: str):
         if tool_name == "highlighter":
             self.highlighter_color = hex_color
+        elif tool_name == "text":
+            self.text_color = hex_color
         else:
             self.pen_color = hex_color
         self.color_changed.emit(tool_name, hex_color)
@@ -281,6 +324,11 @@ class PresentationController(QObject):
         if self.current_page not in self.page_strokes:
             self.page_strokes[self.current_page] = []
         self.page_strokes[self.current_page].append(stroke)
+
+        if self.current_page not in self.page_history:
+            self.page_history[self.current_page] = []
+        self.page_history[self.current_page].append(("stroke", stroke))
+
         self.stroke_started.emit(self.current_page, stroke)
 
     def add_stroke_point(self, norm_x: float, norm_y: float, pressure: float = 1.0):
@@ -299,60 +347,122 @@ class PresentationController(QObject):
             self.current_stroke = None
             self.stroke_finished.emit(self.current_page)
 
+    def add_text(self, norm_x: float, norm_y: float, text: str) -> TextItem | None:
+        """指定した相対座標にテキストアイテムを追加"""
+        text = text.strip()
+        if not text:
+            return None
+        size = self.get_tool_size("text")
+        color = self.text_color
+        item = TextItem(text=text, norm_x=norm_x, norm_y=norm_y, color=color, size=size)
+
+        if self.current_page not in self.page_texts:
+            self.page_texts[self.current_page] = []
+        self.page_texts[self.current_page].append(item)
+
+        if self.current_page not in self.page_history:
+            self.page_history[self.current_page] = []
+        self.page_history[self.current_page].append(("text", item))
+
+        self.text_added.emit(self.current_page, item)
+        return item
+
+    def get_texts_for_page(self, page_index: int) -> list[TextItem]:
+        """指定ページの全テキストアイテムを取得"""
+        return self.page_texts.get(page_index, [])
+
     def erase_at_point(self, norm_x: float, norm_y: float, threshold: float = 0.02, aspect_ratio: float = 1.0) -> bool:
         """
         消しゴム処理:
         - eraser_mode == "stroke" の場合: オブジェクト消しゴム（触れたストローク全体を削除）
         - eraser_mode == "partial" の場合: 通常消しゴム（円の範囲内のみを部分消去・分割）
+        - テキスト: 消しゴムの円とバウンディングボックスが交差したテキストを削除
         """
-        if self.current_page not in self.page_strokes or not self.page_strokes[self.current_page]:
+        has_strokes = self.current_page in self.page_strokes and bool(self.page_strokes[self.current_page])
+        has_texts = self.current_page in self.page_texts and bool(self.page_texts[self.current_page])
+        if not has_strokes and not has_texts:
             return False
 
         center = (norm_x, norm_y)
+        erased_anything = False
 
-        if self.eraser_mode == "stroke":
-            # オブジェクト消しゴム（線分交差判定）
-            remaining_strokes = []
-            erased = False
-            for stroke in self.page_strokes[self.current_page]:
-                if stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
-                    erased = True
+        # 1. テキスト消去判定
+        if has_texts:
+            remaining_texts = []
+            text_erased = False
+            for t_item in self.page_texts[self.current_page]:
+                if text_intersects_circle(t_item, center, threshold, aspect_ratio):
+                    text_erased = True
                 else:
-                    remaining_strokes.append(stroke)
-            if erased:
-                self.page_strokes[self.current_page] = remaining_strokes
-                self.strokes_updated.emit(self.current_page)
-                return True
-            return False
-        else:
-            # 通常消しゴム（部分消去）
-            new_page_strokes: list[Stroke] = []
-            erased_any = False
+                    remaining_texts.append(t_item)
+            if text_erased:
+                self.page_texts[self.current_page] = remaining_texts
+                self.texts_updated.emit(self.current_page)
+                erased_anything = True
 
-            for stroke in self.page_strokes[self.current_page]:
-                if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
-                    new_page_strokes.append(stroke)
-                else:
-                    erased_any = True
-                    clipped = clip_stroke_by_circle(stroke, center, threshold, aspect_ratio)
-                    new_page_strokes.extend(clipped)
+        # 2. ストローク消去判定
+        if has_strokes:
+            if self.eraser_mode == "stroke":
+                # オブジェクト消しゴム（線分交差判定）
+                remaining_strokes = []
+                erased = False
+                for stroke in self.page_strokes[self.current_page]:
+                    if stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
+                        erased = True
+                    else:
+                        remaining_strokes.append(stroke)
+                if erased:
+                    self.page_strokes[self.current_page] = remaining_strokes
+                    self.strokes_updated.emit(self.current_page)
+                    erased_anything = True
+            else:
+                # 通常消しゴム（部分消去）
+                new_page_strokes: list[Stroke] = []
+                erased_any = False
 
-            if erased_any:
-                self.page_strokes[self.current_page] = new_page_strokes
-                self.strokes_updated.emit(self.current_page)
-                return True
-            return False
+                for stroke in self.page_strokes[self.current_page]:
+                    if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
+                        new_page_strokes.append(stroke)
+                    else:
+                        erased_any = True
+                        clipped = clip_stroke_by_circle(stroke, center, threshold, aspect_ratio)
+                        new_page_strokes.extend(clipped)
+
+                if erased_any:
+                    self.page_strokes[self.current_page] = new_page_strokes
+                    self.strokes_updated.emit(self.current_page)
+                    erased_anything = True
+
+        return erased_anything
 
     def erase_strokes_near(self, norm_x: float, norm_y: float, threshold: float = 0.02, aspect_ratio: float = 1.0) -> bool:
         return self.erase_at_point(norm_x, norm_y, threshold, aspect_ratio)
 
     def clear_current_page_strokes(self):
-        if self.current_page in self.page_strokes:
+        had_strokes = self.current_page in self.page_strokes and bool(self.page_strokes[self.current_page])
+        had_texts = self.current_page in self.page_texts and bool(self.page_texts[self.current_page])
+
+        if had_strokes:
             self.page_strokes[self.current_page] = []
             self.strokes_cleared.emit(self.current_page)
+        if had_texts:
+            self.page_texts[self.current_page] = []
+            self.texts_updated.emit(self.current_page)
+        if self.current_page in self.page_history:
+            self.page_history[self.current_page] = []
 
     def undo_current_page_stroke(self):
-        if self.current_page in self.page_strokes and self.page_strokes[self.current_page]:
+        if self.current_page in self.page_history and self.page_history[self.current_page]:
+            kind, item = self.page_history[self.current_page].pop()
+            if kind == "stroke":
+                if self.current_page in self.page_strokes and item in self.page_strokes[self.current_page]:
+                    self.page_strokes[self.current_page].remove(item)
+                    self.stroke_undone.emit(self.current_page)
+            elif kind == "text":
+                if self.current_page in self.page_texts and item in self.page_texts[self.current_page]:
+                    self.page_texts[self.current_page].remove(item)
+                    self.texts_updated.emit(self.current_page)
+        elif self.current_page in self.page_strokes and self.page_strokes[self.current_page]:
             self.page_strokes[self.current_page].pop()
             self.stroke_undone.emit(self.current_page)
 

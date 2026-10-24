@@ -1,14 +1,14 @@
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QGraphicsPathItem, QGraphicsEllipseItem
+    QGraphicsPathItem, QGraphicsEllipseItem, QGraphicsSimpleTextItem
 )
 from PySide6.QtGui import (
     QPixmap, QPainter, QResizeEvent, QKeyEvent, QColor, QPen,
-    QPainterPath, QRadialGradient, QBrush
+    QPainterPath, QRadialGradient, QBrush, QFont
 )
 
-from beamerplus.DrawingModel import PresentationController, Stroke
+from beamerplus.DrawingModel import PresentationController, Stroke, TextItem
 
 # スライド短辺に対するポインタ半径の比率 (視認性の高い大きめのレーザーポインタ)
 POINTER_RADIUS_RATIO = 0.018
@@ -47,6 +47,9 @@ class Viewer(QMainWindow):
         self.active_path_item: QGraphicsPathItem | None = None
         self.active_path: QPainterPath | None = None
 
+        # テキスト管理
+        self.text_items: list[QGraphicsSimpleTextItem] = []
+
         # レーザーポインタアイテム（一度作成して再利用）
         self.pointer_radius: float = 24.0
         self.pointer_item: QGraphicsEllipseItem = QGraphicsEllipseItem(
@@ -76,6 +79,8 @@ class Viewer(QMainWindow):
         controller.strokes_cleared.connect(self.on_strokes_cleared)
         controller.stroke_undone.connect(self.on_stroke_undone)
         controller.strokes_updated.connect(self.on_strokes_updated)
+        controller.text_added.connect(self.on_text_added)
+        controller.texts_updated.connect(self.on_texts_updated)
         controller.tool_size_changed.connect(self.on_tool_size_changed)
 
     def _setup_pointer_item(self):
@@ -113,11 +118,21 @@ class Viewer(QMainWindow):
         self.active_path_item = None
         self.active_path = None
 
+    def _clear_scene_texts(self):
+        """シーンからテキストアイテムのみを安全に削除"""
+        for item in self.text_items:
+            try:
+                self.scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self.text_items.clear()
+
     def show_image(self, image: QPixmap) -> None:
         self.page_pixmap = image
 
-        # 既存ストロークのみ削除（シーン全体を clear して C++ オブジェクトを破棄しない）
+        # 既存ストロークおよびテキストのみ削除（シーン全体を clear して C++ オブジェクトを破棄しない）
         self._clear_scene_strokes()
+        self._clear_scene_texts()
 
         # ピックスマップ更新
         self.pixmap_item.setPixmap(self.page_pixmap)
@@ -126,11 +141,14 @@ class Viewer(QMainWindow):
         # スライド解像度に合わせたポインタサイズ・グラデーション更新
         self._setup_pointer_item()
 
-        # 既存ストロークの復元
+        # 既存ストローク・テキストの復元
         if self.controller:
             page_strokes = self.controller.get_strokes_for_page(self.controller.current_page)
             for stroke in page_strokes:
                 self._draw_complete_stroke(stroke)
+            page_texts = self.controller.get_texts_for_page(self.controller.current_page)
+            for t_item in page_texts:
+                self._draw_complete_text(t_item)
 
         self.fit_view()
 
@@ -156,6 +174,32 @@ class Viewer(QMainWindow):
         path_item = self.scene.addPath(path, pen)
         path_item.setZValue(10)
         self.stroke_items.append(path_item)
+
+    def _draw_complete_text(self, item: TextItem):
+        if not self.page_pixmap or not item.text:
+            return
+        
+        w = self.page_pixmap.width()
+        h = self.page_pixmap.height()
+        base_dim = min(w, h)
+        font_size = max(10, int(base_dim * (item.size * 0.0015)))
+
+        font = QFont()
+        font.setPixelSize(font_size)
+        font.setBold(False)
+        font.setWeight(QFont.Weight.Normal)
+
+        text_item = QGraphicsSimpleTextItem(item.text)
+        text_item.setFont(font)
+        text_item.setBrush(QBrush(QColor(item.color)))
+        text_item.setPen(QPen(Qt.PenStyle.NoPen))
+        
+        pad_x = 6.0 * (w / 800.0) if w > 0 else 6.0
+        pad_y = 3.0 * (h / 600.0) if h > 0 else 3.0
+        text_item.setPos(item.norm_x * w + pad_x, item.norm_y * h + pad_y)
+        text_item.setZValue(20)  # ストロークの上に配置
+        self.scene.addItem(text_item)
+        self.text_items.append(text_item)
 
     def on_pointer_updated(self, norm_x: float, norm_y: float, visible: bool):
         if not self.pointer_item:
@@ -228,6 +272,7 @@ class Viewer(QMainWindow):
 
     def on_strokes_cleared(self, page_index: int):
         self._clear_scene_strokes()
+        self._clear_scene_texts()
 
     def on_stroke_undone(self, page_index: int):
         if self.stroke_items:
@@ -236,6 +281,20 @@ class Viewer(QMainWindow):
                 self.scene.removeItem(last_item)
             except RuntimeError:
                 pass
+
+    def on_text_added(self, page_index: int, item: TextItem):
+        if not self.page_pixmap or (self.controller and page_index != self.controller.current_page):
+            return
+        self._draw_complete_text(item)
+
+    def on_texts_updated(self, page_index: int):
+        if not self.page_pixmap or (self.controller and page_index != self.controller.current_page):
+            return
+        self._clear_scene_texts()
+        if self.controller:
+            page_texts = self.controller.get_texts_for_page(page_index)
+            for t_item in page_texts:
+                self._draw_complete_text(t_item)
 
     def on_strokes_updated(self, page_index: int):
         """消しゴム等でストロークが変更されたときの全ストローク再描画"""

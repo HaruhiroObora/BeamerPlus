@@ -74,6 +74,12 @@ class SimpleView(QWidget):
         self.btn_highlighter.clicked.connect(lambda: self._on_tool_btn_clicked("highlighter"))
         bar_layout.addWidget(self.btn_highlighter)
 
+        self.btn_text = QPushButton("🔤 テキスト")
+        self.btn_text.setCheckable(True)
+        self.btn_text.setToolTip("テキスト書き込み (もう一度クリックで通常モード)")
+        self.btn_text.clicked.connect(lambda: self._on_tool_btn_clicked("text"))
+        bar_layout.addWidget(self.btn_text)
+
         self.btn_eraser = QPushButton("🧹 消しゴム")
         self.btn_eraser.setCheckable(True)
         self.btn_eraser.setToolTip("消しゴム (もう一度クリックで通常モード)")
@@ -97,6 +103,7 @@ class SimpleView(QWidget):
             "pointer": self.btn_pointer,
             "pen": self.btn_pen,
             "highlighter": self.btn_highlighter,
+            "text": self.btn_text,
             "eraser": self.btn_eraser,
         }
 
@@ -173,7 +180,7 @@ class SimpleView(QWidget):
 
         # 全ボタン・スライダーのフォーカスを無効化（矢印キー操作がボタンに吸われないようにする）
         for widget in (
-            self.btn_pointer, self.btn_pen, self.btn_highlighter, self.btn_eraser,
+            self.btn_pointer, self.btn_pen, self.btn_highlighter, self.btn_text, self.btn_eraser,
             self.btn_eraser_mode, self.btn_line, self.btn_color, self.size_slider,
             self.btn_undo, self.btn_clear, self.btn_prev, self.btn_next
         ):
@@ -204,11 +211,19 @@ class SimpleView(QWidget):
             self.btn_eraser_mode.setToolTip("消しゴムモード: オブジェクト（線全体を消去。クリックで通常消しゴムに切替）")
 
     def _choose_color(self):
-        # 現在アクティブなツール（蛍光ペンなら蛍光ペン、それ以外ならペン）の色を変更
-        target_tool = "highlighter" if self.controller.current_tool == "highlighter" else "pen"
-        current_color = self.controller.get_tool_color(target_tool)
-        title = "蛍光ペンの色選択" if target_tool == "highlighter" else "ペンの色選択"
+        # 現在アクティブなツールの色を変更
+        tool = self.controller.current_tool
+        if tool == "highlighter":
+            target_tool = "highlighter"
+            title = "蛍光ペンの色選択"
+        elif tool == "text":
+            target_tool = "text"
+            title = "テキストの色選択"
+        else:
+            target_tool = "pen"
+            title = "ペンの色選択"
 
+        current_color = self.controller.get_tool_color(target_tool)
         color = QColorDialog.getColor(
             QColor(current_color),
             self,
@@ -226,6 +241,10 @@ class SimpleView(QWidget):
             col = self.controller.highlighter_color
             self.btn_color.setEnabled(True)
             self.btn_color.setToolTip("蛍光ペンの色を変更")
+        elif tool == "text":
+            col = self.controller.text_color
+            self.btn_color.setEnabled(True)
+            self.btn_color.setToolTip("テキストの色を変更")
         elif tool == "eraser":
             col = "#555555"
             self.btn_color.setEnabled(False)
@@ -257,8 +276,8 @@ class SimpleView(QWidget):
         # 3. 色選択ボタンの更新
         self._update_color_button()
 
-        # 4. 直線ボタンの有効化/無効化（消しゴム時は無効）
-        self.btn_line.setEnabled(tool_name != "eraser")
+        # 4. 直線ボタンの有効化/無効化（消しゴムおよびテキスト時は無効）
+        self.btn_line.setEnabled(tool_name not in ("eraser", "text"))
 
         # 5. スライダーを該当ツールの保持サイズ・範囲に更新
         if tool_name == "hand":
@@ -269,6 +288,8 @@ class SimpleView(QWidget):
             self.size_slider.setEnabled(True)
             if tool_name in ("pointer", "eraser"):
                 self.lbl_size_title.setText("半径:")
+            elif tool_name == "text":
+                self.lbl_size_title.setText("サイズ:")
             else:
                 self.lbl_size_title.setText("太さ:")
 

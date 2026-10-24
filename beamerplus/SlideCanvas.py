@@ -1,12 +1,12 @@
 import math
 from PySide6.QtCore import Qt, QPointF, QRectF, QEvent
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QLineEdit
 from PySide6.QtGui import (
     QPixmap, QPainter, QPaintEvent, QMouseEvent, QTabletEvent,
-    QPointingDevice, QColor, QPen, QPainterPath, QRadialGradient, QBrush
+    QPointingDevice, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QFont
 )
 
-from beamerplus.DrawingModel import PresentationController, Stroke
+from beamerplus.DrawingModel import PresentationController, Stroke, TextItem
 
 
 class SlideCanvas(QWidget):
@@ -28,6 +28,9 @@ class SlideCanvas(QWidget):
         self.controller.strokes_cleared.connect(self._on_strokes_cleared)
         self.controller.stroke_undone.connect(self._on_stroke_undone)
         self.controller.strokes_updated.connect(self._on_strokes_updated)
+        self.controller.text_added.connect(self._on_text_added)
+        self.controller.texts_updated.connect(self._on_texts_updated)
+        self.controller.tool_changed.connect(self._on_tool_changed)
         self.controller.tool_size_changed.connect(self._on_tool_size_changed)
         self.controller.line_mode_changed.connect(self._on_line_mode_changed)
         self.controller.eraser_mode_changed.connect(self._on_eraser_mode_changed)
@@ -40,7 +43,16 @@ class SlideCanvas(QWidget):
         self.is_tablet_drawing: bool = False
         self.hover_pos: tuple[float, float] | None = None
 
+        # インラインテキスト入力用 QLineEdit
+        self.text_input = QLineEdit(self)
+        self.text_input.hide()
+        self.text_input.returnPressed.connect(self._commit_text)
+        self.text_input.installEventFilter(self)
+        self.text_input_norm_pos: tuple[float, float] | None = None
+
     def set_pixmap(self, pixmap: QPixmap | None):
+        if self.text_input.isVisible():
+            self._commit_text()
         self.pixmap = pixmap
         self.update()
 
@@ -134,6 +146,55 @@ class SlideCanvas(QWidget):
         self.update()
 
     def _on_strokes_updated(self, page_index: int):
+        self.update()
+
+    def _on_text_added(self, page_index: int, item: TextItem):
+        self.update()
+
+    def _on_texts_updated(self, page_index: int):
+        self.update()
+
+    def _on_tool_changed(self, tool_name: str):
+        if tool_name != "text" and self.text_input.isVisible():
+            self._commit_text()
+        if tool_name == "text":
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+        elif tool_name == "hand":
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def eventFilter(self, watched, event):
+        if watched == self.text_input:
+            if event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape:
+                    self._cancel_text()
+                    return True
+                elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._commit_text()
+                    return True
+            elif event.type() == QEvent.Type.FocusOut:
+                if self.text_input.isVisible():
+                    self._commit_text()
+        return super().eventFilter(watched, event)
+
+    def _commit_text(self):
+        if not self.text_input.isVisible() or self.text_input_norm_pos is None:
+            return
+        text = self.text_input.text().strip()
+        norm_x, norm_y = self.text_input_norm_pos
+        self.text_input.hide()
+        self.text_input.clear()
+        self.text_input_norm_pos = None
+        if text:
+            self.controller.add_text(norm_x, norm_y, text)
+        self.setFocus()
+        self.update()
+
+    def _cancel_text(self):
+        self.text_input.hide()
+        self.text_input.clear()
+        self.text_input_norm_pos = None
+        self.setFocus()
         self.update()
 
     def _on_tool_size_changed(self, tool_name: str, size: int):
@@ -231,6 +292,13 @@ class SlideCanvas(QWidget):
             event.accept()
             return
 
+        # 5. テキスト入力ツール
+        if tool == "text":
+            if ev_type == QEvent.Type.TabletPress and norm is not None and pressure > 0.0:
+                self._start_text_input(norm)
+            event.accept()
+            return
+
         super().tabletEvent(event)
 
     # ==========================================
@@ -238,13 +306,22 @@ class SlideCanvas(QWidget):
     # ==========================================
     def mousePressEvent(self, event: QMouseEvent):
         norm = self._pos_to_normalized(event.position())
+
+        # 既存テキスト入力があり、かつテキストツール以外をクリックした場合は確定
+        if self.text_input.isVisible():
+            if not norm or self.controller.current_tool != "text":
+                self._commit_text()
+
         if not norm:
             super().mousePressEvent(event)
             return
 
         if event.button() == Qt.MouseButton.LeftButton:
             tool = self.controller.current_tool
-            if tool in ("pen", "highlighter"):
+            if tool == "text":
+                self._start_text_input(norm)
+                return
+            elif tool in ("pen", "highlighter"):
                 self.controller.begin_stroke(norm[0], norm[1], pressure=1.0)
             elif tool == "eraser":
                 rect = self._get_slide_rect()
@@ -261,6 +338,49 @@ class SlideCanvas(QWidget):
 
         super().mousePressEvent(event)
 
+    def _start_text_input(self, norm: tuple[float, float]):
+        """クリック位置にインラインテキスト入力ボックスを表示"""
+        if self.text_input.isVisible():
+            self._commit_text()
+
+        rect = self._get_slide_rect()
+        if rect.isEmpty():
+            return
+
+        base_dim = min(rect.width(), rect.height())
+        text_size = self.controller.get_tool_size("text")
+        font_size = max(11, int(base_dim * (text_size * 0.0015)))
+
+        font = self.text_input.font()
+        font.setPixelSize(font_size)
+        font.setBold(False)
+        font.setWeight(QFont.Weight.Normal)
+        self.text_input.setFont(font)
+
+        text_color = self.controller.get_tool_color("text")
+        self.text_input.setStyleSheet(
+            f"QLineEdit {{ background-color: rgba(20, 20, 24, 0.92); color: {text_color}; border: 1.5px solid {text_color}; border-radius: 3px; padding: 2px 6px; }}"
+        )
+
+        px = rect.left() + norm[0] * rect.width()
+        py = rect.top() + norm[1] * rect.height()
+        box_w = max(160, int(font_size * 10))
+        box_h = int(font_size * 1.8) + 6
+
+        if px + box_w > rect.right():
+            px = max(rect.left(), rect.right() - box_w)
+        if py + box_h > rect.bottom():
+            py = max(rect.top(), rect.bottom() - box_h)
+
+        self.text_input_norm_pos = (
+            (px - rect.left()) / rect.width(),
+            (py - rect.top()) / rect.height()
+        )
+        self.text_input.setGeometry(int(px), int(py), box_w, box_h)
+        self.text_input.clear()
+        self.text_input.show()
+        self.text_input.setFocus()
+
     def mouseMoveEvent(self, event: QMouseEvent):
         norm = self._pos_to_normalized(event.position())
         tool = self.controller.current_tool
@@ -268,7 +388,11 @@ class SlideCanvas(QWidget):
         if norm:
             if tool == "pointer":
                 self.controller.update_pointer(norm[0], norm[1], True)
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            elif tool == "text":
+                self.setCursor(Qt.CursorShape.IBeamCursor)
             elif tool == "eraser":
+                self.setCursor(Qt.CursorShape.CrossCursor)
                 if event.buttons() & Qt.MouseButton.LeftButton:
                     rect = self._get_slide_rect()
                     aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
@@ -278,6 +402,7 @@ class SlideCanvas(QWidget):
                 self.hover_pos = norm
                 self.update()
             elif tool in ("pen", "highlighter"):
+                self.setCursor(Qt.CursorShape.CrossCursor)
                 if event.buttons() & Qt.MouseButton.LeftButton:
                     if self.controller.is_line_mode:
                         snapped = self._snap_line_endpoint(norm)
@@ -288,9 +413,12 @@ class SlideCanvas(QWidget):
                 else:
                     self.hover_pos = norm
                     self.update()
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             if tool == "pointer":
                 self.controller.update_pointer(0, 0, False)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
             self.hover_pos = None
             self.update()
 
@@ -307,6 +435,7 @@ class SlideCanvas(QWidget):
         if self.controller.current_tool == "pointer":
             self.controller.update_pointer(0, 0, False)
         self.hover_pos = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
         super().leaveEvent(event)
 
@@ -346,6 +475,24 @@ class SlideCanvas(QWidget):
             for pt in stroke.points[1:]:
                 path.lineTo(rect.left() + pt[0] * rect.width(), rect.top() + pt[1] * rect.height())
             painter.drawPath(path)
+
+        # テキスト描画
+        texts = self.controller.get_texts_for_page(self.controller.current_page)
+        for item in texts:
+            if not item.text:
+                continue
+            font_size = max(10, int(base_dim * (item.size * 0.0015)))
+            font = QFont(painter.font())
+            font.setPixelSize(font_size)
+            font.setBold(False)
+            font.setWeight(QFont.Weight.Normal)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(item.color)))
+
+            metrics = painter.fontMetrics()
+            tx = rect.left() + item.norm_x * rect.width()
+            ty = rect.top() + item.norm_y * rect.height()
+            painter.drawText(int(tx + 6), int(ty + metrics.ascent() + 3), item.text)
 
         # 消しゴムカーソル（手元画面のみ、消去範囲を示す円）
         if self.controller.current_tool == "eraser" and self.hover_pos:
