@@ -4,6 +4,7 @@ import socket
 import asyncio
 import threading
 import secrets
+import string
 from typing import Callable
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -11,6 +12,13 @@ from urllib.parse import urlparse, parse_qs
 from PySide6.QtCore import QObject, Signal
 import websockets
 from websockets.protocol import State
+
+
+def generate_passcode(length: int = 8) -> str:
+    """判読しやすく手入力しやすい英数字によるランダムパスコードを生成（英大文字・小文字・数字）"""
+    # 紛らわしい文字 (0, O, 1, I, l) を除いた英数字セット
+    alphabet = "23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def get_local_ip() -> str:
@@ -127,6 +135,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       align-items: center;
       gap: 6px;
       transition: opacity 0.2s;
+      max-width: calc(100vw - 16px);
+      width: max-content;
+      box-sizing: border-box;
     }
     #ui-bar {
       display: flex;
@@ -141,6 +152,28 @@ HTML_CONTENT = """<!DOCTYPE html>
       box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
       color: #f0f0f0;
       font-size: 13px;
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      white-space: nowrap;
+      box-sizing: border-box;
+      touch-action: pan-x;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+    }
+    #ui-bar::-webkit-scrollbar {
+      height: 4px;
+    }
+    #ui-bar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    #ui-bar::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.25);
+      border-radius: 4px;
+    }
+    #ui-bar > * {
+      flex-shrink: 0;
     }
     .btn {
       background: rgba(255, 255, 255, 0.1);
@@ -360,9 +393,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     .auth-card {
       background: #1e1e24;
       border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 24px;
-      padding: 24px 20px;
-      width: 290px;
+      border-radius: 20px;
+      padding: 28px 24px;
+      width: 320px;
       text-align: center;
       box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
       color: #f0f0f0;
@@ -371,84 +404,68 @@ HTML_CONTENT = """<!DOCTYPE html>
       align-items: center;
     }
     .auth-icon {
-      font-size: 32px;
-      margin-bottom: 6px;
+      font-size: 36px;
+      margin-bottom: 8px;
     }
     .auth-title {
-      font-size: 18px;
+      font-size: 20px;
       font-weight: 700;
       margin-bottom: 4px;
     }
     .auth-desc {
-      font-size: 12px;
+      font-size: 13px;
       color: #a0a0b0;
-      margin-bottom: 16px;
+      margin-bottom: 20px;
+      line-height: 1.4;
     }
-    .pin-slots {
-      display: flex;
-      gap: 12px;
+    .auth-input-box {
+      width: 100%;
       margin-bottom: 6px;
     }
-    .pin-slot {
-      width: 44px;
-      height: 50px;
+    #passcode-input {
+      width: 100%;
+      height: 48px;
       background: #141418;
       border: 1.5px solid #3f3f50;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 22px;
+      border-radius: 12px;
+      font-size: 20px;
       font-weight: bold;
-      color: #38bdf8;
-      transition: all 0.15s;
+      color: #fbbf24;
+      text-align: center;
+      letter-spacing: 2px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      -webkit-user-select: text !important;
+      user-select: text !important;
+      touch-action: manipulation !important;
     }
-    .pin-slot.filled {
+    #passcode-input:focus {
       border-color: #38bdf8;
-      background: #1a2230;
-      box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
     }
     #auth-error-msg {
-      height: 20px;
+      min-height: 20px;
       font-size: 12px;
       color: #f43f5e;
-      margin-bottom: 8px;
+      margin-top: 4px;
+      margin-bottom: 12px;
       line-height: 20px;
     }
-    .numpad {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      width: 240px;
-    }
-    .num-btn {
-      height: 52px;
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 16px;
+    .auth-submit-btn {
+      width: 100%;
+      height: 46px;
+      background: #007acc;
+      border: none;
+      border-radius: 12px;
       color: #ffffff;
-      font-size: 20px;
+      font-size: 16px;
       font-weight: 600;
       cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      touch-action: manipulation !important;
-      -webkit-touch-callout: none !important;
-      user-select: none !important;
-      transition: background 0.1s;
+      box-shadow: 0 4px 12px rgba(0, 122, 204, 0.4);
+      transition: background 0.15s;
     }
-    .num-btn:active {
-      background: rgba(255, 255, 255, 0.25);
-    }
-    .num-btn.special {
-      font-size: 16px;
-      background: rgba(255, 255, 255, 0.04);
-      color: #a0a0b0;
-    }
-    .num-btn.special:active {
-      background: rgba(255, 255, 255, 0.15);
-      color: #ffffff;
+    .auth-submit-btn:active {
+      background: #005999;
     }
   </style>
 </head>
@@ -459,31 +476,15 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div class="auth-card">
       <div class="auth-icon">🔒</div>
       <div class="auth-title">BeamerPlus 認証</div>
-      <div class="auth-desc">PC画面の 4桁パスコード を入力してください</div>
+      <div class="auth-desc">PC画面の パスコード を入力してください</div>
 
-      <div class="pin-slots" id="pin-slots">
-        <div class="pin-slot"></div>
-        <div class="pin-slot"></div>
-        <div class="pin-slot"></div>
-        <div class="pin-slot"></div>
+      <div class="auth-input-box">
+        <input type="text" id="passcode-input" placeholder="パスコードを入力" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
       </div>
 
       <div id="auth-error-msg"></div>
 
-      <div class="numpad">
-        <button class="num-btn" data-val="1">1</button>
-        <button class="num-btn" data-val="2">2</button>
-        <button class="num-btn" data-val="3">3</button>
-        <button class="num-btn" data-val="4">4</button>
-        <button class="num-btn" data-val="5">5</button>
-        <button class="num-btn" data-val="6">6</button>
-        <button class="num-btn" data-val="7">7</button>
-        <button class="num-btn" data-val="8">8</button>
-        <button class="num-btn" data-val="9">9</button>
-        <button class="num-btn special" data-action="clear">C</button>
-        <button class="num-btn" data-val="0">0</button>
-        <button class="num-btn special" data-action="backspace">⌫</button>
-      </div>
+      <button id="btn-submit-pass" class="auth-submit-btn">接続する</button>
     </div>
   </div>
 
@@ -511,7 +512,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="separator"></div>
 
       <!-- ツール選択 -->
-      <button class="btn active" id="btn-pen" data-tool="pen" title="ペン">✏️</button>
+      <button class="btn" id="btn-pen" data-tool="pen" title="ペン">✏️</button>
       <button class="btn" id="btn-highlighter" data-tool="highlighter" title="蛍光ペン">🖍️</button>
       <button class="btn" id="btn-line" title="直線モード（ペン/蛍光ペンで直線を引く）">📏</button>
       <button class="btn" id="btn-eraser" data-tool="eraser" title="消しゴム">🧹</button>
@@ -535,10 +536,9 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       <div class="separator"></div>
 
-      <!-- 描画消去・表示切替・保存 -->
+      <!-- 描画消去・表示切替 -->
       <button class="btn" id="btn-clear" title="描画消去">🗑️</button>
       <button class="btn" id="btn-visibility" title="スケッチの表示/非表示切替">👁️</button>
-      <button class="btn" id="btn-save" title="このページのスケッチを画像保存">💾</button>
 
       <!-- スケッチブック / ブランク -->
       <button class="btn" id="btn-sketchbook" title="スケッチブック（白紙の板書画面に切替）">📋</button>
@@ -550,11 +550,17 @@ HTML_CONTENT = """<!DOCTYPE html>
         <input type="checkbox" id="penOnlyToggle" checked>
         <span>Pencilのみ描画</span>
       </label>
+
+      <div class="separator"></div>
+
+      <!-- 全画面表示トグル -->
+      <button class="btn" id="btn-fullscreen" title="全画面表示切替">⛶</button>
     </div>
     <button id="ui-toggle">バーを隠す ▲</button>
   </div>
 
   <script>
+    const stage = document.getElementById('stage');
     const slideWrapper = document.getElementById('slide-wrapper');
     const slideImg = document.getElementById('slide-img');
     const committedCanvas = document.getElementById('committed-canvas');
@@ -575,7 +581,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     const btnPointer = document.getElementById('btn-pointer');
     const btnClear = document.getElementById('btn-clear');
     const btnVisibility = document.getElementById('btn-visibility');
-    const btnSave = document.getElementById('btn-save');
+    const btnFullscreen = document.getElementById('btn-fullscreen');
     const btnSketchbook = document.getElementById('btn-sketchbook');
     const btnBlank = document.getElementById('btn-blank');
     const blankOverlay = document.getElementById('blank-overlay');
@@ -588,7 +594,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     const uiBar = document.getElementById('ui-bar');
     const uiToggle = document.getElementById('ui-toggle');
 
-    let currentTool = 'pen';
+    let currentTool = null; // 初期状態ではどのツールも未選択
     let currentColor = '#e53935';
     let eraserMode = 'partial'; // 'partial' (通常消しゴム) または 'stroke' (オブジェクト消しゴム)
     let isLineMode = false;
@@ -619,30 +625,37 @@ HTML_CONTENT = """<!DOCTYPE html>
     let sketchbookStrokes = [];
     let slideStrokes = [];
 
-    // 指スワイプ検出用
-    let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+    // スワイプ検出用状態
+    let swipeTouchId = null;
+    let swipeStartX = 0;
+    let swipeStartY = 0;
+    let swipeStartTime = 0;
+    let isTrackingSwipe = false;
 
     function getToolOpacity() {
       return currentTool === 'highlighter' ? (toolOpacities.highlighter || 0.28) : (toolOpacities.pen || 0.85);
     }
 
     function getCurrentWidthRatio() {
-      const size = toolSizes[currentTool] !== undefined ? toolSizes[currentTool] : 5;
+      const tool = currentTool || 'pen';
+      const size = toolSizes[tool] !== undefined ? toolSizes[tool] : 5;
       return size * 0.001;
     }
 
     function updateSizeUI() {
-      const range = toolRanges[currentTool] || [1, 50];
+      const tool = currentTool || 'pen';
+      const range = toolRanges[tool] || [1, 50];
       sizeSlider.min = range[0];
       sizeSlider.max = range[1];
-      const curSize = toolSizes[currentTool] !== undefined ? toolSizes[currentTool] : 5;
+      const curSize = toolSizes[tool] !== undefined ? toolSizes[tool] : 5;
       sizeSlider.value = curSize;
       sizeVal.innerText = curSize;
     }
 
     sizeSlider.addEventListener('input', (e) => {
       const val = parseInt(e.target.value, 10);
-      toolSizes[currentTool] = val;
+      const tool = currentTool || 'pen';
+      toolSizes[tool] = val;
       sizeVal.innerText = val;
     });
 
@@ -750,88 +763,63 @@ HTML_CONTENT = """<!DOCTYPE html>
       sendWS({ type: 'toggle_sketch_visibility' });
     });
 
-    // スケッチ保存
-    function saveCurrentSketch() {
-      const exportCanvas = document.createElement('canvas');
-      const w = slideWrapper.clientWidth;
-      const h = slideWrapper.clientHeight;
-      if (w === 0 || h === 0) return;
-
-      const dpr = window.devicePixelRatio || 2;
-      exportCanvas.width = w * dpr;
-      exportCanvas.height = h * dpr;
-      const expCtx = exportCanvas.getContext('2d');
-      expCtx.scale(dpr, dpr);
-
-      if (isSketchbook) {
-        expCtx.fillStyle = '#ffffff';
-        expCtx.fillRect(0, 0, w, h);
-      } else {
-        if (slideImg.complete && slideImg.naturalWidth) {
-          expCtx.drawImage(slideImg, 0, 0, w, h);
-        } else {
-          expCtx.fillStyle = '#1e1e1e';
-          expCtx.fillRect(0, 0, w, h);
-        }
-      }
-
-      const strokes = isSketchbook ? sketchbookStrokes : slideStrokes;
-      for (const s of strokes) {
-        drawStroke(expCtx, s);
-      }
-
-      const filename = isSketchbook
-        ? `sketchbook_${Date.now()}.png`
-        : `slide_page_${currentPage + 1}_${Date.now()}.png`;
-
-      try {
-        const dataUrl = exportCanvas.toDataURL('image/png');
-        const link = document.createElement('a');
-        link.download = filename;
-        link.href = dataUrl;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } catch (err) {
-        console.error('Export error:', err);
-      }
-
-      sendWS({ type: 'save_sketch' });
-      showToast('✓ スケッチを保存しました');
+    // 全画面表示切替
+    function isFullscreen() {
+      return !!(document.fullscreenElement || document.webkitFullscreenElement);
     }
 
-    btnSave.addEventListener('click', (e) => {
+    function updateFullscreenUI() {
+      const fs = isFullscreen();
+      btnFullscreen.innerText = fs ? '🗗' : '⛶';
+      btnFullscreen.title = fs ? '全画面表示を解除' : '全画面表示切替';
+      btnFullscreen.classList.toggle('active', fs);
+    }
+
+    btnFullscreen.addEventListener('click', async (e) => {
       e.stopPropagation();
-      saveCurrentSketch();
+      try {
+        if (!isFullscreen()) {
+          const el = document.documentElement;
+          if (el.requestFullscreen) {
+            await el.requestFullscreen();
+          } else if (el.webkitRequestFullscreen) {
+            el.webkitRequestFullscreen();
+          } else {
+            showToast('ℹ️ お使いの環境は全画面API非対応です');
+          }
+        } else {
+          if (document.exitFullscreen) {
+            await document.exitFullscreen();
+          } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+          }
+        }
+      } catch (err) {
+        console.warn('Fullscreen error:', err);
+      }
+      updateFullscreenUI();
     });
+
+    document.addEventListener('fullscreenchange', updateFullscreenUI);
+    document.addEventListener('webkitfullscreenchange', updateFullscreenUI);
 
     // --- パスコード認証管理 ---
     let currentPasscode = '';
-    let enteredPin = '';
 
     const authOverlay = document.getElementById('auth-overlay');
-    const pinSlots = document.querySelectorAll('.pin-slot');
+    const passcodeInput = document.getElementById('passcode-input');
     const authErrorMsg = document.getElementById('auth-error-msg');
-
-    function updatePinDisplay() {
-      pinSlots.forEach((slot, i) => {
-        if (i < enteredPin.length) {
-          slot.innerText = '●';
-          slot.classList.add('filled');
-        } else {
-          slot.innerText = '';
-          slot.classList.remove('filled');
-        }
-      });
-    }
+    const btnSubmitPass = document.getElementById('btn-submit-pass');
 
     function showAuthOverlay(errorText = '') {
       authOverlay.classList.add('active');
       if (errorText) {
         authErrorMsg.innerText = errorText;
       }
-      enteredPin = '';
-      updatePinDisplay();
+      if (passcodeInput) {
+        passcodeInput.value = '';
+        setTimeout(() => passcodeInput.focus(), 150);
+      }
     }
 
     function hideAuthOverlay() {
@@ -840,7 +828,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function submitPasscode(code) {
-      currentPasscode = code;
+      currentPasscode = (code || '').trim();
+      if (!currentPasscode) {
+        authErrorMsg.innerText = 'パスコードを入力してください';
+        return;
+      }
       authErrorMsg.innerText = '認証中...';
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'auth', passcode: currentPasscode }));
@@ -849,58 +841,19 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    document.querySelectorAll('.num-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const val = btn.dataset.val;
-        const action = btn.dataset.action;
+    if (btnSubmitPass) {
+      btnSubmitPass.addEventListener('click', () => {
+        submitPasscode(passcodeInput.value);
+      });
+    }
 
-        if (val !== undefined) {
-          if (enteredPin.length < 4) {
-            enteredPin += val;
-            updatePinDisplay();
-            authErrorMsg.innerText = '';
-            if (enteredPin.length === 4) {
-              submitPasscode(enteredPin);
-            }
-          }
-        } else if (action === 'clear') {
-          enteredPin = '';
-          updatePinDisplay();
-          authErrorMsg.innerText = '';
-        } else if (action === 'backspace') {
-          if (enteredPin.length > 0) {
-            enteredPin = enteredPin.slice(0, -1);
-            updatePinDisplay();
-            authErrorMsg.innerText = '';
-          }
+    if (passcodeInput) {
+      passcodeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          submitPasscode(passcodeInput.value);
         }
       });
-    });
-
-    window.addEventListener('keydown', (e) => {
-      if (!authOverlay.classList.contains('active')) return;
-      if (e.key >= '0' && e.key <= '9') {
-        if (enteredPin.length < 4) {
-          enteredPin += e.key;
-          updatePinDisplay();
-          authErrorMsg.innerText = '';
-          if (enteredPin.length === 4) {
-            submitPasscode(enteredPin);
-          }
-        }
-      } else if (e.key === 'Backspace') {
-        if (enteredPin.length > 0) {
-          enteredPin = enteredPin.slice(0, -1);
-          updatePinDisplay();
-          authErrorMsg.innerText = '';
-        }
-      } else if (e.key === 'Escape') {
-        enteredPin = '';
-        updatePinDisplay();
-        authErrorMsg.innerText = '';
-      }
-    });
+    }
 
     // 起動時のパスコード取得（URLクエリパラメータ最優先、次点でsessionStorage）
     const urlParams = new URLSearchParams(window.location.search);
@@ -986,8 +939,14 @@ HTML_CONTENT = """<!DOCTYPE html>
         currentPage = msg.currentPage !== undefined ? msg.currentPage : msg.page;
         totalPages = msg.totalPages;
         pageIndicator.innerText = `${currentPage + 1} / ${totalPages}`;
-        loadSlideImage(currentPage);
+        slideStrokes = msg.strokes || [];
+        if (msg.sketchbookStrokes !== undefined) {
+          sketchbookStrokes = msg.sketchbookStrokes;
+        }
+        currentStrokePoints = [];
         clearAllCanvases();
+        renderAllStrokes(isSketchbook ? sketchbookStrokes : slideStrokes);
+        loadSlideImage(currentPage);
         if (msg.type === 'state_sync') {
           if (msg.penOpacity !== undefined) toolOpacities.pen = msg.penOpacity;
           if (msg.highlighterOpacity !== undefined) toolOpacities.highlighter = msg.highlighterOpacity;
@@ -998,12 +957,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           if (msg.isBlank !== undefined) updateBlankUI(msg.isBlank);
           if (msg.isSketchVisible !== undefined) updateSketchVisibilityUI(msg.isSketchVisible);
           if (msg.isSketchbook !== undefined) {
-            sketchbookStrokes = msg.sketchbookStrokes || [];
-            slideStrokes = msg.strokes || [];
             updateSketchbookUI(msg.isSketchbook, msg.isSketchbook ? sketchbookStrokes : slideStrokes);
-          } else if (msg.strokes) {
-            slideStrokes = msg.strokes;
-            renderAllStrokes(slideStrokes);
           }
         }
       } else if (msg.type === 'blank_changed') {
@@ -1186,32 +1140,78 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
-    // --- Apple Pencil タッチ処理 ---
+    // --- Apple Pencil / タッチ座標正規化 ---
     function getNormalizedPos(e) {
-      const touch = e.touches[0] || e.changedTouches[0];
+      const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
       const rect = slideWrapper.getBoundingClientRect();
-      const x = touch.clientX - rect.left;
-      const y = touch.clientY - rect.top;
+      const clientX = touch ? touch.clientX : 0;
+      const clientY = touch ? touch.clientY : 0;
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
       return {
-        normX: Math.max(0, Math.min(1, x / rect.width)),
-        normY: Math.max(0, Math.min(1, y / rect.height)),
+        normX: Math.max(0, Math.min(1, rect.width > 0 ? x / rect.width : 0)),
+        normY: Math.max(0, Math.min(1, rect.height > 0 ? y / rect.height : 0)),
         touch: touch,
-        isStylus: touch.touchType === 'stylus',
-        force: (typeof touch.force === 'number' && touch.force > 0) ? touch.force : 0.6
+        isStylus: touch ? touch.touchType === 'stylus' : false,
+        force: (touch && typeof touch.force === 'number' && touch.force > 0) ? touch.force : 0.6
       };
+    }
+
+    // --- スワイプページ送り管理 ---
+    function startSwipe(touch) {
+      if (!touch) return;
+      swipeTouchId = touch.identifier;
+      swipeStartX = touch.clientX;
+      swipeStartY = touch.clientY;
+      swipeStartTime = Date.now();
+      isTrackingSwipe = true;
+    }
+
+    function checkSwipe(touch) {
+      if (!isTrackingSwipe || !touch) return false;
+      if (touch.identifier !== swipeTouchId) return false;
+      isTrackingSwipe = false;
+
+      const dx = touch.clientX - swipeStartX;
+      const dy = touch.clientY - swipeStartY;
+      const dt = Date.now() - swipeStartTime;
+
+      // 50ms〜800msの間、水平方向に45px以上、縦ブレよりも横移動が主（1.2倍以上）
+      if (dt >= 50 && dt < 800 && Math.abs(dx) >= 45 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+        if (dx < 0) {
+          sendWS({ type: 'next_page' });
+        } else {
+          sendWS({ type: 'prev_page' });
+        }
+        return true;
+      }
+      return false;
     }
 
     // タッチ開始
     activeCanvas.addEventListener('touchstart', (e) => {
       const pos = getNormalizedPos(e);
+      if (!pos.touch) return;
       const penOnly = penOnlyToggle.checked;
 
-      // 指タッチ時のスワイプページ送り記録
-      if (!pos.isStylus) {
-        touchStartX = pos.touch.clientX;
-        touchStartY = pos.touch.clientY;
-        touchStartTime = Date.now();
-        if (penOnly) return; // Pencilのみ描画がONなら指での描画は無視
+      // スワイプ可能条件:
+      // A. ツールが未選択 (currentTool === null) の場合: 指・ペンを問わずスワイプ可能
+      // B. ツール選択中だが「Pencilのみ描画」ONかつ指でのタッチ (!pos.isStylus) の場合: 指スワイプ可能
+      const canSwipe = (!currentTool) || (!pos.isStylus && penOnly);
+      if (canSwipe) {
+        startSwipe(pos.touch);
+      }
+
+      if (!currentTool) {
+        // どのツールも選択されていない場合は描画・消去・ポインタを行わずスワイプ専用とする
+        e.preventDefault();
+        return;
+      }
+
+      if (!pos.isStylus && penOnly) {
+        // Pencilのみ描画がONなら指での描画は無視
+        e.preventDefault();
+        return;
       }
 
       e.preventDefault(); // スクリブルやスクロールを防止
@@ -1258,10 +1258,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     // タッチ移動
     activeCanvas.addEventListener('touchmove', (e) => {
       const pos = getNormalizedPos(e);
+      if (!pos.touch) return;
       const penOnly = penOnlyToggle.checked;
-      if (!pos.isStylus && penOnly) return;
 
+      // スワイプ追跡中、または描画処理中はブラウザのデフォルトスクロールを完全に防止
       e.preventDefault();
+
+      if (!currentTool) return;
+      if (!pos.isStylus && penOnly) return;
 
       if (currentTool === 'pointer') {
         updateLaserDot(pos.normX, pos.normY, true);
@@ -1333,23 +1337,19 @@ HTML_CONTENT = """<!DOCTYPE html>
     // タッチ終了
     const onTouchEnd = (e) => {
       const pos = getNormalizedPos(e);
-      const penOnly = penOnlyToggle.checked;
+      const touch = pos.touch || (e.changedTouches && e.changedTouches[0]);
 
-      // 指スワイプでのページめくり判定
-      if (!pos.isStylus && penOnly) {
-        const dx = pos.touch.clientX - touchStartX;
-        const dy = pos.touch.clientY - touchStartY;
-        const dt = Date.now() - touchStartTime;
-
-        if (dt < 400 && Math.abs(dx) > 60 && Math.abs(dy) < 50) {
-          if (dx < 0) {
-            sendWS({ type: 'next_page' });
-          } else {
-            sendWS({ type: 'prev_page' });
-          }
+      // スワイプ判定を実行
+      if (touch && checkSwipe(touch)) {
+        if (isDrawing) {
+          isDrawing = false;
+          currentStrokePoints = [];
+          activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+          sendWS({ type: 'stroke_end' });
         }
         return;
       }
+      isTrackingSwipe = false;
 
       if (currentTool === 'pointer') {
         updateLaserDot(0, 0, false);
@@ -1360,7 +1360,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (isDrawing) {
         isDrawing = false;
         // 終点を確実に反映（フリーハンド時のみ）
-        if (!isLineMode && currentStrokePoints.length > 0) {
+        if (!isLineMode && currentStrokePoints.length > 0 && pos.normX !== undefined) {
           const last = currentStrokePoints[currentStrokePoints.length - 1];
           const dx = (pos.normX - last[0]) * slideWrapper.clientWidth;
           const dy = (pos.normY - last[1]) * slideWrapper.clientHeight;
@@ -1397,6 +1397,46 @@ HTML_CONTENT = """<!DOCTYPE html>
     activeCanvas.addEventListener('touchend', onTouchEnd, { passive: false });
     activeCanvas.addEventListener('touchcancel', onTouchEnd, { passive: false });
 
+    // スライド外（stage）タッチ時のスワイプ対応
+    stage.addEventListener('touchstart', (e) => {
+      if (e.target !== stage) return;
+      const touch = e.touches[0];
+      if (touch) {
+        startSwipe(touch);
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    stage.addEventListener('touchmove', (e) => {
+      if (e.target !== stage) return;
+      if (isTrackingSwipe) {
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    stage.addEventListener('touchend', (e) => {
+      if (e.target !== stage) return;
+      const touch = e.changedTouches[0];
+      if (touch) {
+        checkSwipe(touch);
+      }
+      isTrackingSwipe = false;
+    }, { passive: false });
+
+    stage.addEventListener('touchcancel', (e) => {
+      if (e.target !== stage) return;
+      const touch = e.changedTouches[0];
+      if (touch) {
+        checkSwipe(touch);
+      }
+      isTrackingSwipe = false;
+    }, { passive: false });
+
+    // UIバー上でのスクロール・タップがスワイプや描画と競合しないよう伝播を止める
+    uiBar.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+    uiBar.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
+    uiBar.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+
     function updateLaserDot(normX, normY, visible) {
       if (visible) {
         laserDot.style.display = 'block';
@@ -1425,18 +1465,33 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // --- ツール選択・UI操作 ---
     function selectTool(toolName) {
-      currentTool = toolName;
-      if (toolName === 'eraser' || toolName === 'pointer') {
+      if (currentTool === toolName) {
+        // 使用しているツールのボタンを押したら選択解除（未選択状態にする）
+        if (currentTool === 'pointer') {
+          if (laserDot) laserDot.style.display = 'none';
+          sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false });
+        }
+        currentTool = null;
         isLineMode = false;
+      } else {
+        if (currentTool === 'pointer' && toolName !== 'pointer') {
+          if (laserDot) laserDot.style.display = 'none';
+          sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false });
+        }
+        currentTool = toolName;
+        if (toolName === 'eraser' || toolName === 'pointer') {
+          isLineMode = false;
+        }
+        if (toolName === 'highlighter') {
+          applyColor('#ffeb3b');
+        } else if (toolName === 'pen' && currentColor === '#ffeb3b') {
+          applyColor('#e53935');
+        }
       }
+
       [btnPen, btnHighlighter, btnEraser, btnPointer].forEach(b => {
-        b.classList.toggle('active', b.dataset.tool === toolName);
+        b.classList.toggle('active', currentTool !== null && b.dataset.tool === currentTool);
       });
-      if (toolName === 'highlighter') {
-        applyColor('#ffeb3b');
-      } else if (toolName === 'pen' && currentColor === '#ffeb3b') {
-        applyColor('#e53935');
-      }
       updateSizeUI();
       updateEraserModeUI();
       updateLineModeUI();
@@ -1464,8 +1519,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       uiToggle.innerText = isBarHidden ? 'バーを表示 ▼' : 'バーを隠す ▲';
     });
 
-    // 初期状態の UI 反映
-    selectTool('pen');
+    // 初期状態の UI 反映（どのツールも未選択の状態）
+    selectTool(null);
     updateEraserModeUI();
     updateLineModeUI();
     adjustLayout();
@@ -1589,7 +1644,7 @@ class WebServer:
         self.status_provider = status_provider
         self.http_port = http_port
         self.ws_port = ws_port
-        self.passcode = str(passcode) if passcode else f"{secrets.randbelow(9000) + 1000}"
+        self.passcode = str(passcode) if passcode else generate_passcode(8)
 
         SlideRequestHandler.image_provider = staticmethod(self.image_provider)
         SlideRequestHandler.status_provider = staticmethod(self.status_provider)
@@ -1601,6 +1656,11 @@ class WebServer:
         self.ws_loop: asyncio.AbstractEventLoop | None = None
         self.connected_clients: set = set()
         self.is_running: bool = False
+
+    def set_passcode(self, new_passcode: str):
+        """iPad 接続用パスコードを更新"""
+        self.passcode = str(new_passcode).strip()
+        SlideRequestHandler.passcode = self.passcode
 
     def start(self):
         if self.is_running:

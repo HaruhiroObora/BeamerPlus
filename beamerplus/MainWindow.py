@@ -666,17 +666,20 @@ class MainWindow(QMainWindow):
         pixmap.save(qbuf, "PNG")
         return bytes(buf.data())
 
-    def _get_web_status(self) -> dict:
+    def _get_strokes_data_for_page(self, page_idx: int) -> list[dict]:
         strokes_data = []
-        current_page = self.controller.current_page
-        if current_page in self.controller.page_strokes:
-            for s in self.controller.page_strokes[current_page]:
+        if page_idx in self.controller.page_strokes:
+            for s in self.controller.page_strokes[page_idx]:
                 strokes_data.append({
                     "color": s.color,
                     "width_ratio": s.width_ratio,
                     "opacity": s.opacity,
                     "points": s.points
                 })
+        return strokes_data
+
+    def _get_web_status(self) -> dict:
+        strokes_data = self._get_strokes_data_for_page(self.controller.current_page)
         sketchbook_data = []
         for s in self.controller.sketchbook_strokes:
             sketchbook_data.append({
@@ -836,7 +839,8 @@ class MainWindow(QMainWindow):
             self.web_server.broadcast({
                 "type": "page_changed",
                 "page": index,
-                "totalPages": self.controller.total_pages
+                "totalPages": self.controller.total_pages,
+                "strokes": self._get_strokes_data_for_page(index),
             })
 
     def _sync_web_stroke_started(self, page_index: int, stroke):
@@ -945,6 +949,7 @@ class MainWindow(QMainWindow):
             self.web_bridge,
             http_port=self.web_server.http_port,
             passcode=self.web_server.passcode,
+            server=self.web_server,
             parent=self
         )
         dialog.exec()

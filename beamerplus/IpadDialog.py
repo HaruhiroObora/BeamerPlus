@@ -3,19 +3,29 @@ import urllib.parse
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QApplication
+    QFrame, QApplication, QLineEdit
 )
-from PySide6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QDesktopServices
+from PySide6.QtGui import QFont, QPixmap, QImage, QPainter, QColor
 
-from beamerplus.WebServer import get_local_ip, WebBridge
+from beamerplus.WebServer import get_local_ip, WebBridge, generate_passcode
 
 
 class IpadDialog(QDialog):
-    def __init__(self, bridge: WebBridge, http_port: int = 8080, passcode: str = "", parent=None):
+    def __init__(
+        self,
+        bridge: WebBridge,
+        http_port: int = 8080,
+        passcode: str = "",
+        server=None,
+        on_passcode_changed=None,
+        parent=None
+    ):
         super().__init__(parent)
         self.bridge = bridge
         self.http_port = http_port
         self.passcode = passcode
+        self.server = server
+        self.on_passcode_changed = on_passcode_changed
 
         self.setWindowTitle("📱 iPad / タブレット連携")
         self.setFixedSize(460, 560)
@@ -96,36 +106,67 @@ class IpadDialog(QDialog):
             lbl_pass_title = QLabel("🔑 パスコード:")
             lbl_pass_title.setStyleSheet("color: #a0a0b0; font-size: 13px; font-weight: 500;")
 
-            spaced_code = " ".join(list(self.passcode))
-            lbl_pass_val = QLabel(spaced_code)
-            lbl_pass_val.setStyleSheet("""
-                QLabel {
+            # 直接編集可能なパスコード入力欄
+            self.passcode_input = QLineEdit(self.passcode)
+            self.passcode_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.passcode_input.setMaxLength(32)
+            self.passcode_input.setStyleSheet("""
+                QLineEdit {
                     color: #fbbf24;
-                    font-size: 18px;
+                    font-size: 15px;
                     font-weight: bold;
-                    letter-spacing: 3px;
+                    letter-spacing: 2px;
                     background-color: #242430;
-                    padding: 2px 10px;
+                    padding: 3px 8px;
                     border: 1px solid #3f3f50;
                     border-radius: 6px;
+                    min-width: 130px;
+                    max-width: 150px;
+                }
+                QLineEdit:focus {
+                    border-color: #38bdf8;
+                    background-color: #1a1a24;
                 }
             """)
+            self.passcode_input.textEdited.connect(self._on_passcode_edited)
+
+            # 更新マークの矢印のみの変更ボタン（クリックでランダム再生成）
+            self.btn_refresh = QPushButton("🔄")
+            self.btn_refresh.setToolTip("ランダムな英数字8桁パスコードを再生成")
+            self.btn_refresh.setFixedSize(30, 30)
+            self.btn_refresh.setStyleSheet("""
+                QPushButton {
+                    background-color: #2b2b36;
+                    color: #ffffff;
+                    border: 1px solid #3f3f50;
+                    border-radius: 6px;
+                    font-size: 14px;
+                    padding: 0;
+                }
+                QPushButton:hover {
+                    background-color: #383848;
+                    border-color: #38bdf8;
+                }
+                QPushButton:pressed {
+                    background-color: #007acc;
+                }
+            """)
+            self.btn_refresh.clicked.connect(self._regenerate_passcode)
+
             passcode_box.addWidget(lbl_pass_title)
-            passcode_box.addWidget(lbl_pass_val)
+            passcode_box.addWidget(self.passcode_input)
+            passcode_box.addWidget(self.btn_refresh)
+
             card_layout.addLayout(passcode_box)
 
         # ボタン行
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
+        btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.btn_copy = QPushButton("📋 URLをコピー")
         self.btn_copy.setToolTip("パスコード付きURLをコピー")
         self.btn_copy.clicked.connect(self._copy_url)
         btn_layout.addWidget(self.btn_copy)
-
-        self.btn_open = QPushButton("🌐 ブラウザでテスト")
-        self.btn_open.clicked.connect(self._open_in_browser)
-        btn_layout.addWidget(self.btn_open)
 
         card_layout.addLayout(btn_layout)
         layout.addWidget(url_card)
@@ -181,14 +222,37 @@ class IpadDialog(QDialog):
         # シグナル接続
         self.bridge.client_count_changed.connect(self.update_client_count)
 
+    def _on_passcode_edited(self, text: str):
+        self._apply_passcode(text.strip(), update_input=False)
+
+    def _regenerate_passcode(self):
+        new_code = generate_passcode(8)
+        if hasattr(self, "passcode_input"):
+            self.passcode_input.setText(new_code)
+        self._apply_passcode(new_code, update_input=False)
+
+    def _apply_passcode(self, new_passcode: str, update_input: bool = True):
+        self.passcode = new_passcode
+        if update_input and hasattr(self, "passcode_input"):
+            self.passcode_input.setText(self.passcode)
+        self.auth_url = f"{self.base_url}/?code={self.passcode}" if self.passcode else self.base_url
+        self._load_qr_code()
+        self.btn_copy.setText("📋 URLをコピー")
+        self.btn_copy.setStyleSheet("")
+
+        if self.server and hasattr(self.server, "set_passcode"):
+            self.server.set_passcode(self.passcode)
+        if self.on_passcode_changed:
+            self.on_passcode_changed(self.passcode)
+
+    def set_passcode(self, new_passcode: str):
+        self._apply_passcode(str(new_passcode).strip(), update_input=True)
+
     def _copy_url(self):
         clipboard = QApplication.clipboard()
         clipboard.setText(self.auth_url)
         self.btn_copy.setText("✓ コピー完了")
         self.btn_copy.setStyleSheet("background-color: #10b981; color: white;")
-
-    def _open_in_browser(self):
-        QDesktopServices.openUrl(self.auth_url)
 
     def _load_qr_code(self):
         """公式 qrcode (PIL) ライブラリを使用して高精細かつ正確な QR コードを生成・描画"""
