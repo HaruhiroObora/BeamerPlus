@@ -8,7 +8,7 @@ LaTeX / Beamer 等の PDF スライドによるプレゼンテーションを快
 
 - **デュアルスクリーン対応**:
   - プロジェクタ/外部ディスプレイに自動全画面表示する「Viewer」と、手元でノートやタイマーを確認できる「発表者ビュー」が完全同期。
-- **📱 iPad / タブレット連携 (Web リモート手書き)**:
+- **iPad / タブレット連携 (Web リモート手書き)**:
   - 専用アプリ不要！同じ Wi-Fi 内の iPad の Safari から開くだけで、スライドを見ながら Apple Pencil で手書き書き込みが可能。
   - Apple Pencil の筆圧感知、パームリジェクション（Pencilのみ描画）、指スワイプでのページめくりに対応。
   - レーザーポインタ、蛍光ペン、消しゴム、Undo/Clear も iPad 上からフル操作でき、PC & プロジェクタ画面へリアルタイム同期。
@@ -47,6 +47,31 @@ pipx install git+https://github.com/HaruhiroObora/BeamerPlus.git
 ### pip を使う場合
 ```bash
 pip install git+https://github.com/HaruhiroObora/BeamerPlus.git
+```
+
+---
+
+## アップデート方法
+
+最新バージョンにアップデートする手順です。
+
+### pipx を使う場合（推奨）
+
+GitHub からインストールしている場合、`--force` オプションを指定して再インストール（上書き更新）することで最新バージョンにアップデートできます：
+
+```bash
+pipx install --force git+https://github.com/HaruhiroObora/BeamerPlus.git
+```
+
+<!-- #### PyPI からインストールしている場合（公式リリース時）
+```bash
+pipx upgrade beamerplus
+``` -->
+
+### pip を使う場合
+
+```bash
+pip install --upgrade git+https://github.com/HaruhiroObora/BeamerPlus.git
 ```
 
 ---
