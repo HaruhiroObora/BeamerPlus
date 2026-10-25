@@ -1,0 +1,1785 @@
+import os
+import json
+import socket
+import asyncio
+import threading
+import secrets
+from typing import Callable
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+from PySide6.QtCore import QObject, Signal
+import websockets
+from websockets.protocol import State
+
+
+def get_local_ip() -> str:
+    """LAN内のローカルIPアドレスを取得"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # ルーティング可能なIPを取得（実際に通信は発生しない）
+        s.connect(('10.255.255.255', 1))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+
+# --- iPad向け Web アプリケーション (HTML / CSS / JavaScript) ---
+HTML_CONTENT = """<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>BeamerPlus iPad Remote</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-touch-callout: none !important;
+      -webkit-user-select: none !important;
+      user-select: none !important;
+      touch-action: none;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #121212;
+      position: fixed;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #stage {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: #121212;
+    }
+    #slide-wrapper {
+      position: relative;
+      background-color: #000000;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      display: inline-block;
+    }
+    #slide-wrapper.sketchbook {
+      background-color: #ffffff !important;
+    }
+    #slide-wrapper.sketchbook #slide-img {
+      visibility: hidden;
+    }
+    #blank-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background-color: #000000;
+      z-index: 90;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255, 255, 255, 0.75);
+      font-size: 24px;
+      font-weight: bold;
+      pointer-events: auto;
+    }
+    #blank-overlay.active {
+      display: flex;
+    }
+    #slide-img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+    #committed-canvas, #active-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #committed-canvas {
+      pointer-events: none;
+    }
+    #active-canvas {
+      cursor: crosshair;
+    }
+    /* フローティングツールバー */
+    #ui-container {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      transition: opacity 0.2s;
+    }
+    #ui-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(32, 32, 35, 0.88);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      padding: 6px 14px;
+      border-radius: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+      color: #f0f0f0;
+      font-size: 13px;
+    }
+    .btn {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+      padding: 6px 12px;
+      border-radius: 18px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+    .btn:active {
+      transform: scale(0.94);
+    }
+    .btn.active {
+      background: #007acc;
+      border-color: #38bdf8;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+    }
+    .btn-nav {
+      font-size: 14px;
+      font-weight: bold;
+      padding: 6px 14px;
+    }
+    #btn-eraser-mode {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 5px 8px;
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.4);
+      min-width: 68px;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+    #btn-eraser-mode.disabled, #btn-line.disabled {
+      opacity: 0.35;
+      pointer-events: none;
+      filter: grayscale(1);
+    }
+    #btn-eraser-mode.stroke-mode {
+      color: #fbbf24;
+      border-color: rgba(251, 191, 36, 0.5);
+    }
+    #page-indicator {
+      font-weight: 600;
+      min-width: 65px;
+      text-align: center;
+      color: #e0e0e0;
+      font-size: 13px;
+    }
+    .separator {
+      width: 1px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.2);
+      margin: 0 2px;
+    }
+    /* 完全な色選択ピッカー */
+    #color-picker-wrapper {
+      position: relative;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid rgba(255, 255, 255, 0.6);
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s, border-color 0.2s;
+      flex-shrink: 0;
+    }
+    #color-picker-wrapper:active {
+      transform: scale(0.92);
+    }
+    #color-indicator {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background-color: #e53935;
+      pointer-events: none;
+    }
+    #native-color-picker {
+      position: absolute;
+      top: -10px;
+      left: -10px;
+      width: 48px;
+      height: 48px;
+      opacity: 0;
+      cursor: pointer;
+      -webkit-appearance: none;
+      border: none;
+    }
+    /* 太さスライダー */
+    #size-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 4px;
+    }
+    #size-slider {
+      -webkit-appearance: none;
+      width: 75px;
+      height: 4px;
+      border-radius: 2px;
+      background: #444448;
+      outline: none;
+      cursor: pointer;
+    }
+    #size-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #ffffff;
+      border: 2px solid #007acc;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+      cursor: pointer;
+    }
+    #size-val {
+      min-width: 22px;
+      text-align: right;
+      font-size: 11px;
+      color: #38bdf8;
+      font-weight: 600;
+    }
+    /* ステータスドット */
+    #status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #f43f5e;
+      transition: background-color 0.3s;
+    }
+    #status-dot.online {
+      background-color: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+    .switch-label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #bbb;
+    }
+    .switch-label input {
+      cursor: pointer;
+    }
+    /* ポインタ表示 */
+    #laser-dot {
+      position: absolute;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #ffffff 10%, #ff3b30 40%, rgba(255,0,0,0) 80%);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      display: none;
+      z-index: 50;
+      box-shadow: 0 0 12px rgba(255, 59, 48, 0.8);
+    }
+    /* ツールバー折りたたみ用トグル */
+    #ui-toggle {
+      background: rgba(30, 30, 30, 0.6);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #aaa;
+      border-radius: 12px;
+      font-size: 10px;
+      padding: 2px 10px;
+      cursor: pointer;
+    }
+    /* トースト通知 */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(16, 185, 129, 0.95);
+      color: #ffffff;
+      padding: 8px 18px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+      z-index: 200;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    #toast.show {
+      opacity: 1;
+    }
+    /* パスコード認証オーバーレイ */
+    #auth-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(15, 15, 18, 0.88);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    #auth-overlay.active {
+      display: flex;
+    }
+    .auth-card {
+      background: #1e1e24;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 24px;
+      padding: 24px 20px;
+      width: 290px;
+      text-align: center;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+      color: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .auth-icon {
+      font-size: 32px;
+      margin-bottom: 6px;
+    }
+    .auth-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .auth-desc {
+      font-size: 12px;
+      color: #a0a0b0;
+      margin-bottom: 16px;
+    }
+    .pin-slots {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+    .pin-slot {
+      width: 44px;
+      height: 50px;
+      background: #141418;
+      border: 1.5px solid #3f3f50;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: bold;
+      color: #38bdf8;
+      transition: all 0.15s;
+    }
+    .pin-slot.filled {
+      border-color: #38bdf8;
+      background: #1a2230;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+    }
+    #auth-error-msg {
+      height: 20px;
+      font-size: 12px;
+      color: #f43f5e;
+      margin-bottom: 8px;
+      line-height: 20px;
+    }
+    .numpad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      width: 240px;
+    }
+    .num-btn {
+      height: 52px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      color: #ffffff;
+      font-size: 20px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      touch-action: manipulation !important;
+      -webkit-touch-callout: none !important;
+      user-select: none !important;
+      transition: background 0.1s;
+    }
+    .num-btn:active {
+      background: rgba(255, 255, 255, 0.25);
+    }
+    .num-btn.special {
+      font-size: 16px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #a0a0b0;
+    }
+    .num-btn.special:active {
+      background: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- パスコード認証オーバーレイ -->
+  <div id="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-icon">🔒</div>
+      <div class="auth-title">BeamerPlus 認証</div>
+      <div class="auth-desc">PC画面の 4桁パスコード を入力してください</div>
+
+      <div class="pin-slots" id="pin-slots">
+        <div class="pin-slot"></div>
+        <div class="pin-slot"></div>
+        <div class="pin-slot"></div>
+        <div class="pin-slot"></div>
+      </div>
+
+      <div id="auth-error-msg"></div>
+
+      <div class="numpad">
+        <button class="num-btn" data-val="1">1</button>
+        <button class="num-btn" data-val="2">2</button>
+        <button class="num-btn" data-val="3">3</button>
+        <button class="num-btn" data-val="4">4</button>
+        <button class="num-btn" data-val="5">5</button>
+        <button class="num-btn" data-val="6">6</button>
+        <button class="num-btn" data-val="7">7</button>
+        <button class="num-btn" data-val="8">8</button>
+        <button class="num-btn" data-val="9">9</button>
+        <button class="num-btn special" data-action="clear">C</button>
+        <button class="num-btn" data-val="0">0</button>
+        <button class="num-btn special" data-action="backspace">⌫</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="blank-overlay">⬛ 暗転中（タップで解除）</div>
+  <div id="toast"></div>
+
+  <div id="stage">
+    <div id="slide-wrapper">
+      <img id="slide-img" alt="Slide" src="">
+      <canvas id="committed-canvas"></canvas>
+      <canvas id="active-canvas" inputmode="none"></canvas>
+      <div id="laser-dot"></div>
+    </div>
+  </div>
+
+  <div id="ui-container">
+    <div id="ui-bar">
+      <div id="status-dot" title="切断中"></div>
+
+      <!-- ページ送り -->
+      <button class="btn btn-nav" id="btn-prev">◀</button>
+      <span id="page-indicator">- / -</span>
+      <button class="btn btn-nav" id="btn-next">▶</button>
+
+      <div class="separator"></div>
+
+      <!-- ツール選択 -->
+      <button class="btn active" id="btn-pen" data-tool="pen" title="ペン">✏️</button>
+      <button class="btn" id="btn-highlighter" data-tool="highlighter" title="蛍光ペン">🖍️</button>
+      <button class="btn" id="btn-line" title="直線モード（ペン/蛍光ペンで直線を引く）">📏</button>
+      <button class="btn" id="btn-eraser" data-tool="eraser" title="消しゴム">🧹</button>
+      <button class="btn disabled" id="btn-eraser-mode" title="消しゴムモード切替（通常 / オブジェクト）">通常</button>
+      <button class="btn" id="btn-pointer" data-tool="pointer" title="レーザーポインタ">🔴</button>
+
+      <div class="separator"></div>
+
+      <!-- 完全な色選択ピッカー -->
+      <div id="color-picker-wrapper" title="完全な色選択（タップでピッカーを開く）">
+        <input type="color" id="native-color-picker" value="#e53935">
+        <div id="color-indicator"></div>
+      </div>
+
+      <!-- 太さ調整スライダー -->
+      <div id="size-wrapper" title="線の太さを変更">
+        <span style="font-size: 11px; color: #888;">太さ</span>
+        <input type="range" id="size-slider" min="1" max="30" value="5">
+        <span id="size-val">5</span>
+      </div>
+
+      <div class="separator"></div>
+
+      <!-- 描画消去・表示切替・保存 -->
+      <button class="btn" id="btn-clear" title="描画消去">🗑️</button>
+      <button class="btn" id="btn-visibility" title="スケッチの表示/非表示切替">👁️</button>
+      <button class="btn" id="btn-save" title="このページのスケッチを画像保存">💾</button>
+
+      <!-- スケッチブック / ブランク -->
+      <button class="btn" id="btn-sketchbook" title="スケッチブック（白紙の板書画面に切替）">📋</button>
+      <button class="btn" id="btn-blank" title="画面暗転（ブランク）">⬛</button>
+
+      <div class="separator"></div>
+
+      <label class="switch-label">
+        <input type="checkbox" id="penOnlyToggle" checked>
+        <span>Pencilのみ描画</span>
+      </label>
+    </div>
+    <button id="ui-toggle">バーを隠す ▲</button>
+  </div>
+
+  <script>
+    const slideWrapper = document.getElementById('slide-wrapper');
+    const slideImg = document.getElementById('slide-img');
+    const committedCanvas = document.getElementById('committed-canvas');
+    const committedCtx = committedCanvas.getContext('2d');
+    const activeCanvas = document.getElementById('active-canvas');
+    const activeCtx = activeCanvas.getContext('2d');
+    const laserDot = document.getElementById('laser-dot');
+
+    const statusDot = document.getElementById('status-dot');
+    const pageIndicator = document.getElementById('page-indicator');
+    const btnPrev = document.getElementById('btn-prev');
+    const btnNext = document.getElementById('btn-next');
+    const btnPen = document.getElementById('btn-pen');
+    const btnHighlighter = document.getElementById('btn-highlighter');
+    const btnLine = document.getElementById('btn-line');
+    const btnEraser = document.getElementById('btn-eraser');
+    const btnEraserMode = document.getElementById('btn-eraser-mode');
+    const btnPointer = document.getElementById('btn-pointer');
+    const btnClear = document.getElementById('btn-clear');
+    const btnVisibility = document.getElementById('btn-visibility');
+    const btnSave = document.getElementById('btn-save');
+    const btnSketchbook = document.getElementById('btn-sketchbook');
+    const btnBlank = document.getElementById('btn-blank');
+    const blankOverlay = document.getElementById('blank-overlay');
+    const toast = document.getElementById('toast');
+    const penOnlyToggle = document.getElementById('penOnlyToggle');
+    const colorPicker = document.getElementById('native-color-picker');
+    const colorIndicator = document.getElementById('color-indicator');
+    const sizeSlider = document.getElementById('size-slider');
+    const sizeVal = document.getElementById('size-val');
+    const uiBar = document.getElementById('ui-bar');
+    const uiToggle = document.getElementById('ui-toggle');
+
+    let currentTool = 'pen';
+    let currentColor = '#e53935';
+    let eraserMode = 'partial'; // 'partial' (通常消しゴム) または 'stroke' (オブジェクト消しゴム)
+    let isLineMode = false;
+    let toolOpacities = {
+      pen: 0.85,
+      highlighter: 0.28
+    };
+    let toolSizes = {
+      pen: 5,
+      highlighter: 45,
+      eraser: 25,
+      pointer: 18
+    };
+    let toolRanges = {
+      pen: [1, 30],
+      highlighter: [5, 160],
+      eraser: [5, 100],
+      pointer: [5, 60]
+    };
+    let currentPage = 0;
+    let totalPages = 0;
+    let isDrawing = false;
+    let currentStrokePoints = [];
+    let remoteStroke = null;
+    let isBlank = false;
+    let isSketchbook = false;
+    let isSketchVisible = true;
+    let sketchbookStrokes = [];
+    let slideStrokes = [];
+
+    // 指スワイプ検出用
+    let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+
+    function getToolOpacity() {
+      return currentTool === 'highlighter' ? (toolOpacities.highlighter || 0.28) : (toolOpacities.pen || 0.85);
+    }
+
+    function getCurrentWidthRatio() {
+      const size = toolSizes[currentTool] !== undefined ? toolSizes[currentTool] : 5;
+      return size * 0.001;
+    }
+
+    function updateSizeUI() {
+      const range = toolRanges[currentTool] || [1, 50];
+      sizeSlider.min = range[0];
+      sizeSlider.max = range[1];
+      const curSize = toolSizes[currentTool] !== undefined ? toolSizes[currentTool] : 5;
+      sizeSlider.value = curSize;
+      sizeVal.innerText = curSize;
+    }
+
+    sizeSlider.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      toolSizes[currentTool] = val;
+      sizeVal.innerText = val;
+    });
+
+    // 消しゴムモード切替 UI 更新
+    function updateEraserModeUI() {
+      if (eraserMode === 'stroke') {
+        btnEraserMode.innerText = 'オブジェクト';
+        btnEraserMode.classList.add('stroke-mode');
+        btnEraserMode.title = '消しゴム: オブジェクト（線全体を消去。タップで通常に切替）';
+      } else {
+        btnEraserMode.innerText = '通常';
+        btnEraserMode.classList.remove('stroke-mode');
+        btnEraserMode.title = '消しゴム: 通常（なぞった部分のみ消去。タップでオブジェクトに切替）';
+      }
+
+      if (currentTool === 'eraser') {
+        btnEraserMode.classList.remove('disabled');
+      } else {
+        btnEraserMode.classList.add('disabled');
+      }
+    }
+
+    btnEraserMode.addEventListener('click', (e) => {
+      e.stopPropagation();
+      eraserMode = (eraserMode === 'partial') ? 'stroke' : 'partial';
+      updateEraserModeUI();
+    });
+
+    // 直線モード UI 更新
+    function updateLineModeUI() {
+      btnLine.classList.toggle('active', isLineMode);
+      const canDrawLine = (currentTool === 'pen' || currentTool === 'highlighter');
+      btnLine.classList.toggle('disabled', !canDrawLine);
+    }
+
+    btnLine.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (currentTool !== 'pen' && currentTool !== 'highlighter') {
+        selectTool('pen', false);
+        isLineMode = true;
+      } else {
+        isLineMode = !isLineMode;
+      }
+      updateLineModeUI();
+    });
+
+    // スケッチブック / ブランク UI 更新
+    function updateBlankUI(enabled) {
+      isBlank = !!enabled;
+      btnBlank.classList.toggle('active', isBlank);
+      blankOverlay.classList.toggle('active', isBlank);
+    }
+
+    function updateSketchbookUI(enabled, strokes) {
+      isSketchbook = !!enabled;
+      btnSketchbook.classList.toggle('active', isSketchbook);
+      slideWrapper.classList.toggle('sketchbook', isSketchbook);
+      if (isSketchbook) {
+        if (strokes) sketchbookStrokes = strokes;
+        renderAllStrokes(sketchbookStrokes);
+      } else {
+        if (strokes) slideStrokes = strokes;
+        renderAllStrokes(slideStrokes);
+      }
+    }
+
+    btnSketchbook.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sendWS({ type: 'toggle_sketchbook' });
+    });
+
+    btnBlank.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sendWS({ type: 'toggle_blank' });
+    });
+
+    blankOverlay.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sendWS({ type: 'toggle_blank' });
+    });
+
+    // トースト通知
+    let toastTimer = null;
+    function showToast(text) {
+      if (!toast) return;
+      toast.innerText = text;
+      toast.classList.add('show');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2500);
+    }
+
+    // スケッチ表示/非表示 UI 更新
+    function updateSketchVisibilityUI(visible) {
+      isSketchVisible = !!visible;
+      btnVisibility.innerText = isSketchVisible ? '👁️' : '👁️‍🗨️';
+      btnVisibility.classList.toggle('active', !isSketchVisible);
+      committedCanvas.style.display = isSketchVisible ? 'block' : 'none';
+      activeCanvas.style.display = isSketchVisible ? 'block' : 'none';
+    }
+
+    btnVisibility.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sendWS({ type: 'toggle_sketch_visibility' });
+    });
+
+    // スケッチ保存
+    function saveCurrentSketch() {
+      const exportCanvas = document.createElement('canvas');
+      const w = slideWrapper.clientWidth;
+      const h = slideWrapper.clientHeight;
+      if (w === 0 || h === 0) return;
+
+      const dpr = window.devicePixelRatio || 2;
+      exportCanvas.width = w * dpr;
+      exportCanvas.height = h * dpr;
+      const expCtx = exportCanvas.getContext('2d');
+      expCtx.scale(dpr, dpr);
+
+      if (isSketchbook) {
+        expCtx.fillStyle = '#ffffff';
+        expCtx.fillRect(0, 0, w, h);
+      } else {
+        if (slideImg.complete && slideImg.naturalWidth) {
+          expCtx.drawImage(slideImg, 0, 0, w, h);
+        } else {
+          expCtx.fillStyle = '#1e1e1e';
+          expCtx.fillRect(0, 0, w, h);
+        }
+      }
+
+      const strokes = isSketchbook ? sketchbookStrokes : slideStrokes;
+      for (const s of strokes) {
+        drawStroke(expCtx, s);
+      }
+
+      const filename = isSketchbook
+        ? `sketchbook_${Date.now()}.png`
+        : `slide_page_${currentPage + 1}_${Date.now()}.png`;
+
+      try {
+        const dataUrl = exportCanvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = filename;
+        link.href = dataUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (err) {
+        console.error('Export error:', err);
+      }
+
+      sendWS({ type: 'save_sketch' });
+      showToast('✓ スケッチを保存しました');
+    }
+
+    btnSave.addEventListener('click', (e) => {
+      e.stopPropagation();
+      saveCurrentSketch();
+    });
+
+    // --- パスコード認証管理 ---
+    let currentPasscode = '';
+    let enteredPin = '';
+
+    const authOverlay = document.getElementById('auth-overlay');
+    const pinSlots = document.querySelectorAll('.pin-slot');
+    const authErrorMsg = document.getElementById('auth-error-msg');
+
+    function updatePinDisplay() {
+      pinSlots.forEach((slot, i) => {
+        if (i < enteredPin.length) {
+          slot.innerText = '●';
+          slot.classList.add('filled');
+        } else {
+          slot.innerText = '';
+          slot.classList.remove('filled');
+        }
+      });
+    }
+
+    function showAuthOverlay(errorText = '') {
+      authOverlay.classList.add('active');
+      if (errorText) {
+        authErrorMsg.innerText = errorText;
+      }
+      enteredPin = '';
+      updatePinDisplay();
+    }
+
+    function hideAuthOverlay() {
+      authOverlay.classList.remove('active');
+      authErrorMsg.innerText = '';
+    }
+
+    function submitPasscode(code) {
+      currentPasscode = code;
+      authErrorMsg.innerText = '認証中...';
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'auth', passcode: currentPasscode }));
+      } else {
+        connectWS();
+      }
+    }
+
+    document.querySelectorAll('.num-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const val = btn.dataset.val;
+        const action = btn.dataset.action;
+
+        if (val !== undefined) {
+          if (enteredPin.length < 4) {
+            enteredPin += val;
+            updatePinDisplay();
+            authErrorMsg.innerText = '';
+            if (enteredPin.length === 4) {
+              submitPasscode(enteredPin);
+            }
+          }
+        } else if (action === 'clear') {
+          enteredPin = '';
+          updatePinDisplay();
+          authErrorMsg.innerText = '';
+        } else if (action === 'backspace') {
+          if (enteredPin.length > 0) {
+            enteredPin = enteredPin.slice(0, -1);
+            updatePinDisplay();
+            authErrorMsg.innerText = '';
+          }
+        }
+      });
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (!authOverlay.classList.contains('active')) return;
+      if (e.key >= '0' && e.key <= '9') {
+        if (enteredPin.length < 4) {
+          enteredPin += e.key;
+          updatePinDisplay();
+          authErrorMsg.innerText = '';
+          if (enteredPin.length === 4) {
+            submitPasscode(enteredPin);
+          }
+        }
+      } else if (e.key === 'Backspace') {
+        if (enteredPin.length > 0) {
+          enteredPin = enteredPin.slice(0, -1);
+          updatePinDisplay();
+          authErrorMsg.innerText = '';
+        }
+      } else if (e.key === 'Escape') {
+        enteredPin = '';
+        updatePinDisplay();
+        authErrorMsg.innerText = '';
+      }
+    });
+
+    // 起動時のパスコード取得（URLクエリパラメータ最優先、次点でsessionStorage）
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlPasscode = urlParams.get('code') || urlParams.get('passcode') || '';
+
+    if (urlPasscode) {
+      currentPasscode = urlPasscode;
+      sessionStorage.setItem('beamerplus_passcode', currentPasscode);
+    } else {
+      currentPasscode = sessionStorage.getItem('beamerplus_passcode') || '';
+    }
+
+    // --- WebSocket 接続 ---
+    const wsUrl = `ws://${location.hostname}:__WS_PORT__`;
+    let ws = null;
+
+    function connectWS() {
+      if (!currentPasscode) {
+        showAuthOverlay();
+        return;
+      }
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        // パスコードで認証要求
+        ws.send(JSON.stringify({
+          type: 'auth',
+          passcode: currentPasscode
+        }));
+      };
+
+      ws.onclose = () => {
+        statusDot.className = '';
+        statusDot.title = '切断中 (再接続中...)';
+        if (currentPasscode) {
+          setTimeout(connectWS, 2000);
+        }
+      };
+
+      ws.onerror = (e) => {
+        ws.close();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'auth_result') {
+            if (msg.success) {
+              sessionStorage.setItem('beamerplus_passcode', currentPasscode);
+              hideAuthOverlay();
+              statusDot.className = 'online';
+              statusDot.title = '接続済み';
+            } else {
+              sessionStorage.removeItem('beamerplus_passcode');
+              currentPasscode = '';
+              showAuthOverlay(msg.message || 'パスコードが正しくありません');
+            }
+            return;
+          }
+          handleServerMessage(msg);
+        } catch (e) {
+          console.error(e);
+        }
+      };
+    }
+
+    if (currentPasscode) {
+      connectWS();
+    } else {
+      showAuthOverlay();
+    }
+
+    function sendWS(data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+      }
+    }
+
+    // サーバーからの通知処理
+    function handleServerMessage(msg) {
+      if (msg.type === 'state_sync' || msg.type === 'page_changed') {
+        currentPage = msg.currentPage !== undefined ? msg.currentPage : msg.page;
+        totalPages = msg.totalPages;
+        pageIndicator.innerText = `${currentPage + 1} / ${totalPages}`;
+        loadSlideImage(currentPage);
+        clearAllCanvases();
+        if (msg.type === 'state_sync') {
+          if (msg.penOpacity !== undefined) toolOpacities.pen = msg.penOpacity;
+          if (msg.highlighterOpacity !== undefined) toolOpacities.highlighter = msg.highlighterOpacity;
+          if (msg.toolRanges) Object.assign(toolRanges, msg.toolRanges);
+          updateSizeUI();
+          updateEraserModeUI();
+          updateLineModeUI();
+          if (msg.isBlank !== undefined) updateBlankUI(msg.isBlank);
+          if (msg.isSketchVisible !== undefined) updateSketchVisibilityUI(msg.isSketchVisible);
+          if (msg.isSketchbook !== undefined) {
+            sketchbookStrokes = msg.sketchbookStrokes || [];
+            slideStrokes = msg.strokes || [];
+            updateSketchbookUI(msg.isSketchbook, msg.isSketchbook ? sketchbookStrokes : slideStrokes);
+          } else if (msg.strokes) {
+            slideStrokes = msg.strokes;
+            renderAllStrokes(slideStrokes);
+          }
+        }
+      } else if (msg.type === 'blank_changed') {
+        updateBlankUI(msg.enabled);
+      } else if (msg.type === 'sketchbook_changed') {
+        updateSketchbookUI(msg.enabled, msg.strokes);
+      } else if (msg.type === 'sketch_visibility_changed') {
+        updateSketchVisibilityUI(msg.visible);
+      } else if (msg.type === 'sketch_saved') {
+        showToast(`✓ PC側保存: ${msg.filename}`);
+      } else if (msg.type === 'strokes_cleared') {
+        clearAllCanvases();
+        if (isSketchbook) {
+          sketchbookStrokes = [];
+        } else {
+          slideStrokes = [];
+        }
+      } else if (msg.type === 'strokes_updated' || msg.type === 'stroke_undone') {
+        clearAllCanvases();
+        if (msg.strokes) {
+          if (isSketchbook) {
+            sketchbookStrokes = msg.strokes;
+          } else {
+            slideStrokes = msg.strokes;
+          }
+          renderAllStrokes(msg.strokes);
+        }
+      } else if (msg.type === 'remote_stroke_start') {
+        remoteStroke = {
+          color: msg.color,
+          width_ratio: msg.widthRatio,
+          opacity: msg.opacity,
+          points: [msg.p0]
+        };
+        activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+        drawStroke(activeCtx, remoteStroke);
+      } else if (msg.type === 'remote_stroke_move') {
+        if (remoteStroke) {
+          remoteStroke.points.push([msg.normX, msg.normY]);
+          activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+          drawStroke(activeCtx, remoteStroke);
+        }
+      } else if (msg.type === 'remote_stroke_end') {
+        if (remoteStroke) {
+          activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+          drawStroke(committedCtx, remoteStroke);
+          if (isSketchbook) {
+            sketchbookStrokes.push(remoteStroke);
+          } else {
+            slideStrokes.push(remoteStroke);
+          }
+          remoteStroke = null;
+        }
+      } else if (msg.type === 'pointer_updated') {
+        updateLaserDot(msg.normX, msg.normY, msg.visible);
+      }
+    }
+
+    // --- スライド画像の読み込みとリサイズ ---
+    function loadSlideImage(page) {
+      const codeParam = currentPasscode ? `&code=${encodeURIComponent(currentPasscode)}` : '';
+      slideImg.src = `/api/slide?page=${page}${codeParam}&t=${Date.now()}`;
+      slideImg.onload = () => {
+        adjustLayout();
+      };
+    }
+
+    function adjustLayout() {
+      const stageW = window.innerWidth;
+      const stageH = window.innerHeight;
+
+      let imgW = slideImg.naturalWidth;
+      let imgH = slideImg.naturalHeight;
+
+      if (!imgW || !imgH) {
+        // 画像未読込やスケッチブック時: 16:9 比率をフォールバックとして使用
+        imgW = 1600;
+        imgH = 900;
+      }
+
+      const scale = Math.min(stageW / imgW, stageH / imgH);
+      const targetW = Math.max(100, Math.round(imgW * scale));
+      const targetH = Math.max(100, Math.round(imgH * scale));
+
+      slideWrapper.style.width = targetW + 'px';
+      slideWrapper.style.height = targetH + 'px';
+
+      // Canvas のピクセル解像度を Retina (devicePixelRatio) に合わせる
+      const dpr = window.devicePixelRatio || 2;
+      [committedCanvas, activeCanvas].forEach(c => {
+        c.width = targetW * dpr;
+        c.height = targetH * dpr;
+      });
+      [committedCtx, activeCtx].forEach(ctx => {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
+      });
+
+      // Canvas サイズ変更により描画バッファがクリアされるため、保持しているストロークを必ず再描画
+      const currentStrokes = isSketchbook ? sketchbookStrokes : slideStrokes;
+      renderAllStrokes(currentStrokes);
+    }
+
+    window.addEventListener('resize', adjustLayout);
+
+    function clearAllCanvases() {
+      committedCtx.clearRect(0, 0, committedCanvas.width, committedCanvas.height);
+      activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+    }
+
+    function drawStroke(targetCtx, stroke) {
+      if (!stroke.points || stroke.points.length === 0) return;
+      const pts = stroke.points;
+      const w = slideWrapper.clientWidth;
+      const h = slideWrapper.clientHeight;
+      const minDim = Math.min(w, h);
+
+      targetCtx.beginPath();
+      targetCtx.strokeStyle = stroke.color;
+      targetCtx.fillStyle = stroke.color;
+      targetCtx.lineCap = 'round';
+      targetCtx.lineJoin = 'round';
+      targetCtx.globalAlpha = stroke.opacity !== undefined ? stroke.opacity : 0.85;
+      const lineWidth = Math.max(1.5, minDim * (stroke.width_ratio || 0.005));
+      targetCtx.lineWidth = lineWidth;
+
+      if (pts.length === 1) {
+        // 単一タップ時のドット描画
+        const px = pts[0][0] * w;
+        const py = pts[0][1] * h;
+        targetCtx.arc(px, py, lineWidth / 2, 0, Math.PI * 2);
+        targetCtx.fill();
+        targetCtx.globalAlpha = 1.0;
+        return;
+      }
+
+      const p0x = pts[0][0] * w;
+      const p0y = pts[0][1] * h;
+      targetCtx.moveTo(p0x, p0y);
+
+      if (pts.length === 2) {
+        targetCtx.lineTo(pts[1][0] * w, pts[1][1] * h);
+      } else {
+        // 中点二次ベジェスプライン曲線（C1連続）による滑らかな曲線補間
+        const p1x = pts[1][0] * w;
+        const p1y = pts[1][1] * h;
+        targetCtx.lineTo((p0x + p1x) * 0.5, (p0y + p1y) * 0.5);
+
+        for (let i = 1; i < pts.length - 1; i++) {
+          const cpx = pts[i][0] * w;
+          const cpy = pts[i][1] * h;
+          const nextX = pts[i + 1][0] * w;
+          const nextY = pts[i + 1][1] * h;
+          const midX = (cpx + nextX) * 0.5;
+          const midY = (cpy + nextY) * 0.5;
+          targetCtx.quadraticCurveTo(cpx, cpy, midX, midY);
+        }
+        targetCtx.lineTo(pts[pts.length - 1][0] * w, pts[pts.length - 1][1] * h);
+      }
+
+      targetCtx.stroke();
+      targetCtx.globalAlpha = 1.0;
+    }
+
+    function renderAllStrokes(strokes) {
+      clearAllCanvases();
+      for (const stroke of strokes) {
+        drawStroke(committedCtx, stroke);
+      }
+    }
+
+    function drawActiveStroke() {
+      activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+      if (currentStrokePoints.length === 0) return;
+      drawStroke(activeCtx, {
+        color: currentColor,
+        width_ratio: getCurrentWidthRatio(),
+        opacity: getToolOpacity(),
+        points: currentStrokePoints
+      });
+    }
+
+    // --- Apple Pencil タッチ処理 ---
+    function getNormalizedPos(e) {
+      const touch = e.touches[0] || e.changedTouches[0];
+      const rect = slideWrapper.getBoundingClientRect();
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      return {
+        normX: Math.max(0, Math.min(1, x / rect.width)),
+        normY: Math.max(0, Math.min(1, y / rect.height)),
+        touch: touch,
+        isStylus: touch.touchType === 'stylus',
+        force: (typeof touch.force === 'number' && touch.force > 0) ? touch.force : 0.6
+      };
+    }
+
+    // タッチ開始
+    activeCanvas.addEventListener('touchstart', (e) => {
+      const pos = getNormalizedPos(e);
+      const penOnly = penOnlyToggle.checked;
+
+      // 指タッチ時のスワイプページ送り記録
+      if (!pos.isStylus) {
+        touchStartX = pos.touch.clientX;
+        touchStartY = pos.touch.clientY;
+        touchStartTime = Date.now();
+        if (penOnly) return; // Pencilのみ描画がONなら指での描画は無視
+      }
+
+      e.preventDefault(); // スクリブルやスクロールを防止
+
+      if (currentTool === 'pointer') {
+        updateLaserDot(pos.normX, pos.normY, true);
+        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true });
+        return;
+      }
+
+      if (currentTool === 'eraser') {
+        sendWS({
+          type: 'erase',
+          normX: pos.normX,
+          normY: pos.normY,
+          mode: eraserMode,
+          size: toolSizes.eraser || 25
+        });
+        return;
+      }
+
+      // ペン / 蛍光ペン描画（均一な透明度・太さで描画）
+      isDrawing = true;
+      if (isLineMode) {
+        currentStrokePoints = [[pos.normX, pos.normY], [pos.normX, pos.normY]];
+      } else {
+        currentStrokePoints = [[pos.normX, pos.normY]];
+      }
+      drawActiveStroke();
+
+      sendWS({
+        type: 'stroke_start',
+        tool: currentTool,
+        color: currentColor,
+        size: toolSizes[currentTool] || 5,
+        widthRatio: getCurrentWidthRatio(),
+        normX: pos.normX,
+        normY: pos.normY,
+        pressure: 1.0,
+        isLine: isLineMode
+      });
+    }, { passive: false });
+
+    // タッチ移動
+    activeCanvas.addEventListener('touchmove', (e) => {
+      const pos = getNormalizedPos(e);
+      const penOnly = penOnlyToggle.checked;
+      if (!pos.isStylus && penOnly) return;
+
+      e.preventDefault();
+
+      if (currentTool === 'pointer') {
+        updateLaserDot(pos.normX, pos.normY, true);
+        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true });
+        return;
+      }
+
+      if (currentTool === 'eraser') {
+        sendWS({
+          type: 'erase',
+          normX: pos.normX,
+          normY: pos.normY,
+          mode: eraserMode,
+          size: toolSizes.eraser || 25
+        });
+        return;
+      }
+
+      if (!isDrawing) return;
+
+      if (isLineMode) {
+        // 直線モード: 始点から現在位置までの2点ストローク
+        let endX = pos.normX;
+        let endY = pos.normY;
+        if (currentStrokePoints.length > 0) {
+          const p0 = currentStrokePoints[0];
+          const dx = (endX - p0[0]) * slideWrapper.clientWidth;
+          const dy = (endY - p0[1]) * slideWrapper.clientHeight;
+          const angleDeg = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+          // 水平スナップ (±5度以内)
+          if (angleDeg < 5 || angleDeg > 175) {
+            endY = p0[1];
+          } else if (Math.abs(angleDeg - 90) < 5) {
+            // 垂直スナップ (±5度以内)
+            endX = p0[0];
+          }
+          currentStrokePoints = [p0, [endX, endY]];
+        }
+        drawActiveStroke();
+        sendWS({
+          type: 'line_update',
+          normX: endX,
+          normY: endY
+        });
+        return;
+      }
+
+      // 手ブレ・静止時の微小ジッター抑制（約1.5px未満の微小移動は間引く）
+      if (currentStrokePoints.length > 0) {
+        const last = currentStrokePoints[currentStrokePoints.length - 1];
+        const dx = (pos.normX - last[0]) * slideWrapper.clientWidth;
+        const dy = (pos.normY - last[1]) * slideWrapper.clientHeight;
+        if (dx * dx + dy * dy < 2.25) {
+          return;
+        }
+      }
+
+      currentStrokePoints.push([pos.normX, pos.normY]);
+      drawActiveStroke();
+
+      sendWS({
+        type: 'stroke_move',
+        normX: pos.normX,
+        normY: pos.normY,
+        pressure: 1.0
+      });
+    }, { passive: false });
+
+    // タッチ終了
+    const onTouchEnd = (e) => {
+      const pos = getNormalizedPos(e);
+      const penOnly = penOnlyToggle.checked;
+
+      // 指スワイプでのページめくり判定
+      if (!pos.isStylus && penOnly) {
+        const dx = pos.touch.clientX - touchStartX;
+        const dy = pos.touch.clientY - touchStartY;
+        const dt = Date.now() - touchStartTime;
+
+        if (dt < 400 && Math.abs(dx) > 60 && Math.abs(dy) < 50) {
+          if (dx < 0) {
+            sendWS({ type: 'next_page' });
+          } else {
+            sendWS({ type: 'prev_page' });
+          }
+        }
+        return;
+      }
+
+      if (currentTool === 'pointer') {
+        updateLaserDot(0, 0, false);
+        sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false });
+        return;
+      }
+
+      if (isDrawing) {
+        isDrawing = false;
+        // 終点を確実に反映（フリーハンド時のみ）
+        if (!isLineMode && currentStrokePoints.length > 0) {
+          const last = currentStrokePoints[currentStrokePoints.length - 1];
+          const dx = (pos.normX - last[0]) * slideWrapper.clientWidth;
+          const dy = (pos.normY - last[1]) * slideWrapper.clientHeight;
+          if (dx * dx + dy * dy >= 1.0) {
+            currentStrokePoints.push([pos.normX, pos.normY]);
+            sendWS({
+              type: 'stroke_move',
+              normX: pos.normX,
+              normY: pos.normY,
+              pressure: 1.0
+            });
+          }
+        }
+        activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+        if (currentStrokePoints.length > 0) {
+          const finishedStroke = {
+            color: currentColor,
+            width_ratio: getCurrentWidthRatio(),
+            opacity: getToolOpacity(),
+            points: currentStrokePoints
+          };
+          drawStroke(committedCtx, finishedStroke);
+          if (isSketchbook) {
+            sketchbookStrokes.push(finishedStroke);
+          } else {
+            slideStrokes.push(finishedStroke);
+          }
+        }
+        currentStrokePoints = [];
+        sendWS({ type: 'stroke_end' });
+      }
+    };
+
+    activeCanvas.addEventListener('touchend', onTouchEnd, { passive: false });
+    activeCanvas.addEventListener('touchcancel', onTouchEnd, { passive: false });
+
+    function updateLaserDot(normX, normY, visible) {
+      if (visible) {
+        laserDot.style.display = 'block';
+        laserDot.style.left = (normX * 100) + '%';
+        laserDot.style.top = (normY * 100) + '%';
+      } else {
+        laserDot.style.display = 'none';
+      }
+    }
+
+    // --- 完全な色選択・カラーピッカー操作 ---
+    function applyColor(hex) {
+      currentColor = hex;
+      if (colorPicker) colorPicker.value = hex;
+      if (colorIndicator) colorIndicator.style.backgroundColor = hex;
+    }
+
+    if (colorPicker) {
+      colorPicker.addEventListener('input', (e) => {
+        applyColor(e.target.value);
+      });
+      colorPicker.addEventListener('change', (e) => {
+        applyColor(e.target.value);
+      });
+    }
+
+    // --- ツール選択・UI操作 ---
+    function selectTool(toolName) {
+      currentTool = toolName;
+      if (toolName === 'eraser' || toolName === 'pointer') {
+        isLineMode = false;
+      }
+      [btnPen, btnHighlighter, btnEraser, btnPointer].forEach(b => {
+        b.classList.toggle('active', b.dataset.tool === toolName);
+      });
+      if (toolName === 'highlighter') {
+        applyColor('#ffeb3b');
+      } else if (toolName === 'pen' && currentColor === '#ffeb3b') {
+        applyColor('#e53935');
+      }
+      updateSizeUI();
+      updateEraserModeUI();
+      updateLineModeUI();
+    }
+
+    [btnPen, btnHighlighter, btnEraser, btnPointer].forEach(btn => {
+      btn.addEventListener('click', () => {
+        selectTool(btn.dataset.tool);
+      });
+    });
+
+    // ページ操作ボタン
+    btnPrev.addEventListener('click', () => sendWS({ type: 'prev_page' }));
+    btnNext.addEventListener('click', () => sendWS({ type: 'next_page' }));
+    btnClear.addEventListener('click', () => {
+      clearAllCanvases();
+      sendWS({ type: 'clear' });
+    });
+
+    // UIバーの折りたたみ
+    let isBarHidden = false;
+    uiToggle.addEventListener('click', () => {
+      isBarHidden = !isBarHidden;
+      uiBar.style.display = isBarHidden ? 'none' : 'flex';
+      uiToggle.innerText = isBarHidden ? 'バーを表示 ▼' : 'バーを隠す ▲';
+    });
+
+    // 初期状態の UI 反映
+    selectTool('pen');
+    updateEraserModeUI();
+    updateLineModeUI();
+    adjustLayout();
+  </script>
+</body>
+</html>
+"""
+
+
+# --- Qt シグナルブリッジ ---
+class WebBridge(QObject):
+    stroke_started = Signal(dict)
+    stroke_moved = Signal(dict)
+    stroke_ended = Signal()
+    pointer_updated = Signal(float, float, bool)
+    erase_requested = Signal(dict)
+    eraser_mode_command = Signal(str)  # "partial" または "stroke"
+    line_mode_command = Signal(bool)    # 直線モード ON/OFF
+    line_update_command = Signal(float, float) # 直線終点更新
+    page_command = Signal(str, int)  # "next", "prev", "set", page_idx
+    tool_command = Signal(str)
+    tool_size_command = Signal(str, int)
+    color_command = Signal(str, str)
+    undo_requested = Signal()
+    clear_requested = Signal()
+    client_count_changed = Signal(int)
+    blank_command = Signal(bool)
+    sketchbook_command = Signal(bool)
+    toggle_blank_command = Signal()
+    toggle_sketchbook_command = Signal()
+    sketch_visibility_command = Signal(bool)
+    toggle_sketch_visibility_command = Signal()
+    save_sketch_requested = Signal()
+
+
+# --- HTTP リクエストハンドラ ---
+class SlideRequestHandler(SimpleHTTPRequestHandler):
+    image_provider: Callable[[int], bytes | None] | None = None
+    status_provider: Callable[[], dict] | None = None
+    ws_port: int = 8765
+    passcode: str = ""
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        if path in ("/", "/index.html"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            content = HTML_CONTENT.replace("__WS_PORT__", str(SlideRequestHandler.ws_port))
+            self.wfile.write(content.encode("utf-8"))
+            return
+
+        elif path == "/api/slide":
+            req_code = params.get("code", [""])[0]
+            if SlideRequestHandler.passcode and req_code != SlideRequestHandler.passcode:
+                self.send_response(401)
+                self.end_headers()
+                return
+
+            page_str = params.get("page", ["0"])[0]
+            try:
+                page_idx = int(page_str)
+            except ValueError:
+                page_idx = 0
+
+            image_data = None
+            if SlideRequestHandler.image_provider:
+                image_data = SlideRequestHandler.image_provider(page_idx)
+
+            if image_data:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(image_data)
+            else:
+                self.send_response(404)
+                self.end_headers()
+            return
+
+        elif path == "/api/status":
+            req_code = params.get("code", [""])[0]
+            if SlideRequestHandler.passcode and req_code != SlideRequestHandler.passcode:
+                self.send_response(401)
+                self.end_headers()
+                return
+
+            status = {}
+            if SlideRequestHandler.status_provider:
+                status = SlideRequestHandler.status_provider()
+            res = json.dumps(status).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(res)
+            return
+
+        super().do_GET()
+
+    def log_message(self, format, *args):
+        pass  # ターミナルログ抑制
+
+
+# --- WebServer 統合クラス ---
+class WebServer:
+    def __init__(
+        self,
+        bridge: WebBridge,
+        image_provider: Callable[[int], bytes | None],
+        status_provider: Callable[[], dict],
+        http_port: int = 8080,
+        ws_port: int = 8765,
+        passcode: str | None = None,
+    ):
+        self.bridge = bridge
+        self.image_provider = image_provider
+        self.status_provider = status_provider
+        self.http_port = http_port
+        self.ws_port = ws_port
+        self.passcode = str(passcode) if passcode else f"{secrets.randbelow(9000) + 1000}"
+
+        SlideRequestHandler.image_provider = staticmethod(self.image_provider)
+        SlideRequestHandler.status_provider = staticmethod(self.status_provider)
+        SlideRequestHandler.passcode = self.passcode
+
+        self.http_server: ThreadingHTTPServer | None = None
+        self.http_thread: threading.Thread | None = None
+        self.ws_thread: threading.Thread | None = None
+        self.ws_loop: asyncio.AbstractEventLoop | None = None
+        self.connected_clients: set = set()
+        self.is_running: bool = False
+
+    def start(self):
+        if self.is_running:
+            return
+        self.is_running = True
+
+        # 1. HTTP サーバー起動
+        def run_http():
+            ThreadingHTTPServer.allow_reuse_address = True
+            for port in range(self.http_port, self.http_port + 10):
+                try:
+                    self.http_server = ThreadingHTTPServer(("0.0.0.0", port), SlideRequestHandler)
+                    self.http_port = port
+                    self.http_server.serve_forever()
+                    break
+                except OSError as e:
+                    if port == self.http_port + 9:
+                        print(f"[BeamerPlus] HTTP Server Error: {e}")
+
+        self.http_thread = threading.Thread(target=run_http, daemon=True)
+        self.http_thread.start()
+
+        # 2. WebSocket サーバー起動
+        def run_ws():
+            self.ws_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.ws_loop)
+
+            async def ws_handler(websocket):
+                authenticated = False
+                try:
+                    async for message in websocket:
+                        try:
+                            data = json.loads(message)
+                        except Exception:
+                            continue
+
+                        msg_type = data.get("type")
+
+                        if not authenticated:
+                            if msg_type == "auth":
+                                req_code = str(data.get("passcode", "")).strip()
+                                if req_code == self.passcode:
+                                    authenticated = True
+                                    self.connected_clients.add(websocket)
+                                    self.bridge.client_count_changed.emit(len(self.connected_clients))
+
+                                    await websocket.send(json.dumps({
+                                        "type": "auth_result",
+                                        "success": True
+                                    }))
+
+                                    # 初期状態送信
+                                    try:
+                                        init_data = self.status_provider()
+                                        init_data["type"] = "state_sync"
+                                        await websocket.send(json.dumps(init_data))
+                                    except Exception:
+                                        pass
+                                else:
+                                    await websocket.send(json.dumps({
+                                        "type": "auth_result",
+                                        "success": False,
+                                        "message": "パスコードが正しくありません"
+                                    }))
+                            continue
+
+                        self._handle_client_message(data)
+
+                except (websockets.exceptions.ConnectionClosed, ConnectionResetError, BrokenPipeError):
+                    pass
+                except Exception:
+                    pass
+                finally:
+                    if authenticated:
+                        self.connected_clients.discard(websocket)
+                        self.bridge.client_count_changed.emit(len(self.connected_clients))
+
+            async def main_ws():
+                for port in range(self.ws_port, self.ws_port + 10):
+                    try:
+                        async with websockets.serve(ws_handler, "0.0.0.0", port):
+                            self.ws_port = port
+                            SlideRequestHandler.ws_port = port
+                            await asyncio.Future()
+                        break
+                    except OSError:
+                        if port == self.ws_port + 9:
+                            raise
+
+            try:
+                self.ws_loop.run_until_complete(main_ws())
+            except Exception as e:
+                print(f"[BeamerPlus] WebSocket Server Error: {e}")
+
+        self.ws_thread = threading.Thread(target=run_ws, daemon=True)
+        self.ws_thread.start()
+
+    def _handle_client_message(self, data: dict):
+        msg_type = data.get("type")
+        if msg_type == "stroke_start":
+            self.bridge.stroke_started.emit(data)
+        elif msg_type == "stroke_move":
+            self.bridge.stroke_moved.emit(data)
+        elif msg_type == "stroke_end":
+            self.bridge.stroke_ended.emit()
+        elif msg_type == "pointer_move":
+            self.bridge.pointer_updated.emit(
+                float(data.get("normX", 0.0)),
+                float(data.get("normY", 0.0)),
+                bool(data.get("visible", False))
+            )
+        elif msg_type == "erase":
+            self.bridge.erase_requested.emit(data)
+        elif msg_type == "set_eraser_mode":
+            self.bridge.eraser_mode_command.emit(str(data.get("mode", "partial")))
+        elif msg_type == "set_line_mode":
+            self.bridge.line_mode_command.emit(bool(data.get("isLine", False)))
+        elif msg_type == "line_update":
+            self.bridge.line_update_command.emit(
+                float(data.get("normX", 0.0)),
+                float(data.get("normY", 0.0))
+            )
+        elif msg_type == "prev_page":
+            self.bridge.page_command.emit("prev", 0)
+        elif msg_type == "next_page":
+            self.bridge.page_command.emit("next", 0)
+        elif msg_type == "set_page":
+            self.bridge.page_command.emit("set", int(data.get("page", 0)))
+        elif msg_type == "set_tool":
+            self.bridge.tool_command.emit(str(data.get("tool", "pen")))
+        elif msg_type == "set_tool_size":
+            self.bridge.tool_size_command.emit(
+                str(data.get("tool", "pen")),
+                int(data.get("size", 5))
+            )
+        elif msg_type == "set_color":
+            self.bridge.color_command.emit(
+                str(data.get("tool", "pen")),
+                str(data.get("color", "#e53935"))
+            )
+        elif msg_type == "undo":
+            self.bridge.undo_requested.emit()
+        elif msg_type == "clear":
+            self.bridge.clear_requested.emit()
+        elif msg_type == "toggle_blank":
+            self.bridge.toggle_blank_command.emit()
+        elif msg_type == "set_blank":
+            self.bridge.blank_command.emit(bool(data.get("enabled", False)))
+        elif msg_type == "toggle_sketchbook":
+            self.bridge.toggle_sketchbook_command.emit()
+        elif msg_type == "set_sketchbook":
+            self.bridge.sketchbook_command.emit(bool(data.get("enabled", False)))
+        elif msg_type == "toggle_sketch_visibility":
+            self.bridge.toggle_sketch_visibility_command.emit()
+        elif msg_type == "set_sketch_visibility":
+            self.bridge.sketch_visibility_command.emit(bool(data.get("visible", True)))
+        elif msg_type == "save_sketch":
+            self.bridge.save_sketch_requested.emit()
+
+    def broadcast(self, message_dict: dict):
+        """全接続クライアント（iPad）へメッセージをブロードキャスト"""
+        if not self.connected_clients or not self.ws_loop:
+            return
+
+        payload = json.dumps(message_dict)
+
+        async def _send():
+            tasks = []
+            for ws in list(self.connected_clients):
+                if ws.state == State.OPEN:
+                    tasks.append(ws.send(payload))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run_coroutine_threadsafe(_send(), self.ws_loop)
+
+    def stop(self):
+        if self.http_server:
+            self.http_server.shutdown()
+        if self.ws_loop:
+            self.ws_loop.stop()
+        self.is_running = False

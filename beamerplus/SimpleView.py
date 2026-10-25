@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QColorDialog, QToolButton, QLabel, QFrame, QSlider
@@ -10,6 +10,8 @@ from beamerplus.SlideCanvas import SlideCanvas
 
 
 class SimpleView(QWidget):
+    save_sketch_requested = Signal()
+
     def __init__(self, controller: PresentationController, parent: QWidget | None = None):
         super().__init__(parent)
         self.controller = controller
@@ -32,10 +34,12 @@ class SimpleView(QWidget):
         self.controller.line_mode_changed.connect(self._on_line_mode_changed)
         self.controller.color_changed.connect(self._on_color_changed)
         self.controller.eraser_mode_changed.connect(self._on_eraser_mode_changed)
+        self.controller.sketch_visibility_changed.connect(self._on_sketch_visibility_changed)
 
         # 初期表示の更新
         self._on_tool_changed(self.controller.current_tool)
         self._on_eraser_mode_changed(self.controller.eraser_mode)
+        self._on_sketch_visibility_changed(self.controller.is_sketch_visible)
 
     def _create_toolbar(self) -> QWidget:
         bar = QFrame()
@@ -56,31 +60,31 @@ class SimpleView(QWidget):
         bar_layout.setSpacing(6)
 
         # 基本ツールボタン
-        self.btn_pointer = QPushButton("🔴 ポインタ")
+        self.btn_pointer = QPushButton("🔴")
         self.btn_pointer.setCheckable(True)
         self.btn_pointer.setToolTip("レーザーポインタ (もう一度クリックで通常モード)")
         self.btn_pointer.clicked.connect(lambda: self._on_tool_btn_clicked("pointer"))
         bar_layout.addWidget(self.btn_pointer)
 
-        self.btn_pen = QPushButton("✏️ ペン")
+        self.btn_pen = QPushButton("✏️")
         self.btn_pen.setCheckable(True)
         self.btn_pen.setToolTip("手書きペン (もう一度クリックで通常モード)")
         self.btn_pen.clicked.connect(lambda: self._on_tool_btn_clicked("pen"))
         bar_layout.addWidget(self.btn_pen)
 
-        self.btn_highlighter = QPushButton("🖍️ 蛍光ペン")
+        self.btn_highlighter = QPushButton("🖍️")
         self.btn_highlighter.setCheckable(True)
         self.btn_highlighter.setToolTip("蛍光ペン (もう一度クリックで通常モード)")
         self.btn_highlighter.clicked.connect(lambda: self._on_tool_btn_clicked("highlighter"))
         bar_layout.addWidget(self.btn_highlighter)
 
-        self.btn_text = QPushButton("🔤 テキスト")
+        self.btn_text = QPushButton("🔤")
         self.btn_text.setCheckable(True)
         self.btn_text.setToolTip("テキスト書き込み (もう一度クリックで通常モード)")
         self.btn_text.clicked.connect(lambda: self._on_tool_btn_clicked("text"))
         bar_layout.addWidget(self.btn_text)
 
-        self.btn_eraser = QPushButton("🧹 消しゴム")
+        self.btn_eraser = QPushButton("🧹")
         self.btn_eraser.setCheckable(True)
         self.btn_eraser.setToolTip("消しゴム (もう一度クリックで通常モード)")
         self.btn_eraser.clicked.connect(lambda: self._on_tool_btn_clicked("eraser"))
@@ -108,7 +112,7 @@ class SimpleView(QWidget):
         }
 
         # 直線修飾ボタン（ペンまたは蛍光ペンで直線を引く）
-        self.btn_line = QPushButton("📏 直線")
+        self.btn_line = QPushButton("📏")
         self.btn_line.setCheckable(True)
         self.btn_line.setToolTip("選択中のペン/蛍光ペンで直線を引く（もう一度クリックでフリーハンドに戻る）")
         self.btn_line.clicked.connect(self._on_line_btn_clicked)
@@ -153,14 +157,23 @@ class SimpleView(QWidget):
         sep2.setStyleSheet("color: #444444;")
         bar_layout.addWidget(sep2)
 
-        # Undo & Clear
-        self.btn_undo = QPushButton("↩ 元に戻す")
-        self.btn_undo.clicked.connect(self.controller.undo_current_page_stroke)
-        bar_layout.addWidget(self.btn_undo)
-
-        self.btn_clear = QPushButton("🗑 描画消去")
+        # 描画消去
+        self.btn_clear = QPushButton("🗑️")
+        self.btn_clear.setToolTip("描画消去")
         self.btn_clear.clicked.connect(self.controller.clear_current_page_strokes)
         bar_layout.addWidget(self.btn_clear)
+
+        # スケッチ表示/非表示
+        self.btn_visibility = QPushButton("👁️")
+        self.btn_visibility.setToolTip("スケッチの表示/非表示切替 [H]")
+        self.btn_visibility.clicked.connect(self.controller.toggle_sketch_visibility)
+        bar_layout.addWidget(self.btn_visibility)
+
+        # スケッチ保存
+        self.btn_save = QPushButton("💾")
+        self.btn_save.setToolTip("現在のページのスケッチを画像保存")
+        self.btn_save.clicked.connect(self.save_sketch_requested.emit)
+        bar_layout.addWidget(self.btn_save)
 
         bar_layout.addStretch()
 
@@ -182,7 +195,7 @@ class SimpleView(QWidget):
         for widget in (
             self.btn_pointer, self.btn_pen, self.btn_highlighter, self.btn_text, self.btn_eraser,
             self.btn_eraser_mode, self.btn_line, self.btn_color, self.size_slider,
-            self.btn_undo, self.btn_clear, self.btn_prev, self.btn_next
+            self.btn_clear, self.btn_visibility, self.btn_save, self.btn_prev, self.btn_next
         ):
             widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -201,6 +214,14 @@ class SimpleView(QWidget):
 
     def _on_line_mode_changed(self, is_line: bool):
         self.btn_line.setChecked(is_line)
+
+    def _on_sketch_visibility_changed(self, visible: bool):
+        if visible:
+            self.btn_visibility.setText("👁️")
+            self.btn_visibility.setToolTip("スケッチの表示/非表示切替 [H]")
+        else:
+            self.btn_visibility.setText("👁️‍🗨️")
+            self.btn_visibility.setToolTip("スケッチ非表示中（クリックで再表示） [H]")
 
     def _on_eraser_mode_changed(self, mode: str):
         if mode == "partial":

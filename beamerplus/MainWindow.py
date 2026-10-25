@@ -1,18 +1,20 @@
 import os
-from PySide6.QtCore import Qt, QTimer, QTime, QEvent
+from PySide6.QtCore import Qt, QTimer, QTime, QEvent, QByteArray, QBuffer, QIODevice, QDateTime, QPointF
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QFileDialog, QMessageBox, QToolBar, QPushButton, QLabel, QFrame,
     QApplication
 )
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPainter, QColor, QPen, QBrush, QFont, QPixmap
 
 from beamerplus.PdfReader import PdfReader
-from beamerplus.DrawingModel import PresentationController
+from beamerplus.DrawingModel import PresentationController, create_smooth_path
 from beamerplus.ThumbnailBar import ThumbnailBar
 from beamerplus.SimpleView import SimpleView
 from beamerplus.NotePanel import NotePanel
 from beamerplus.Viewer import Viewer
+from beamerplus.WebServer import WebServer, WebBridge
+from beamerplus.IpadDialog import IpadDialog
 
 
 class MainWindow(QMainWindow):
@@ -23,10 +25,11 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self.controller = PresentationController(self)
+        self.controller.blank_state_changed.connect(self._on_blank_state_changed)
+        self.controller.sketchbook_state_changed.connect(self._on_sketchbook_state_changed)
         self.viewer = viewer
         if self.viewer:
             self.viewer.connect_controller(self.controller)
-            self.viewer.blank_state_changed.connect(self._on_blank_state_changed)
 
         self.pdf_reader: PdfReader | None = None
         self.render_dpi: int = 400  # デフォルト: 4K 超高精細 (400 DPI)
@@ -52,6 +55,7 @@ class MainWindow(QMainWindow):
 
         # 1. メインスライド操作領域（ポインタ・ペンなどのツールバー ＋ キャンバス：常時表示）
         self.slide_view = SimpleView(self.controller)
+        self.slide_view.save_sketch_requested.connect(self.save_current_page_sketch)
         self.center_splitter.addWidget(self.slide_view)
 
         # 2. ノートパネル（右サイド、表示/非表示切り替え可能）
@@ -71,6 +75,17 @@ class MainWindow(QMainWindow):
 
         # コントローラからのシグナル受信
         self.controller.page_changed.connect(self._on_page_changed)
+
+        # iPad / Web リモート連携サーバーの初期化
+        self._is_handling_web_stroke: bool = False
+        self.web_bridge = WebBridge()
+        self.web_server = WebServer(
+            self.web_bridge,
+            self._get_slide_image_bytes,
+            self._get_web_status
+        )
+        self._connect_web_signals()
+        self.web_server.start()
 
         # UIメニューとツールバー作成
         self._create_menus_and_toolbars()
@@ -101,6 +116,11 @@ class MainWindow(QMainWindow):
         save_notes_action.triggered.connect(self.save_notes)
         file_menu.addAction(save_notes_action)
 
+        save_sketch_action = QAction("現在のページのスケッチを画像保存(&E)...", self)
+        save_sketch_action.setShortcut("Ctrl+Shift+S")
+        save_sketch_action.triggered.connect(lambda: self.save_current_page_sketch())
+        file_menu.addAction(save_sketch_action)
+
         file_menu.addSeparator()
 
         quit_action = QAction("終了(&Q)", self)
@@ -130,6 +150,13 @@ class MainWindow(QMainWindow):
         self.act_toggle_toolbar.setChecked(True)
         self.act_toggle_toolbar.triggered.connect(self.toggle_main_toolbar)
         view_menu.addAction(self.act_toggle_toolbar)
+
+        view_menu.addSeparator()
+
+        self.act_toggle_sketch = QAction("スケッチの表示/非表示", self)
+        self.act_toggle_sketch.setShortcut("H")
+        self.act_toggle_sketch.triggered.connect(self.controller.toggle_sketch_visibility)
+        view_menu.addAction(self.act_toggle_sketch)
 
         view_menu.addSeparator()
 
@@ -167,6 +194,13 @@ class MainWindow(QMainWindow):
         act_blank.setShortcut("B")
         act_blank.triggered.connect(self.toggle_blank_screen)
         pres_menu.addAction(act_blank)
+
+        # ツールメニュー
+        tool_menu = menu_bar.addMenu("ツール(&T)")
+        act_ipad = QAction("📱 iPad / タブレット連携(&I)...", self)
+        act_ipad.setToolTip("iPad のブラウザから Apple Pencil で手書き描画するための接続情報を表示")
+        act_ipad.triggered.connect(self.show_ipad_dialog)
+        tool_menu.addAction(act_ipad)
 
         # 上部ツールバー
         self.main_toolbar = QToolBar("メインツールバー")
@@ -227,6 +261,13 @@ class MainWindow(QMainWindow):
         btn_viewer.clicked.connect(self.toggle_viewer_window)
         self.main_toolbar.addWidget(btn_viewer)
 
+        self.btn_sketchbook = QPushButton("📋 板書 (S)")
+        self.btn_sketchbook.setStyleSheet(self._tb_btn_style())
+        self.btn_sketchbook.setFixedWidth(120)
+        self.btn_sketchbook.setToolTip("白紙の板書画面（スケッチブック）に切り替えます [S/W]")
+        self.btn_sketchbook.clicked.connect(self.toggle_sketchbook)
+        self.main_toolbar.addWidget(self.btn_sketchbook)
+
         self.btn_blank = QPushButton("⬛ 暗転 (B)")
         self.btn_blank.setStyleSheet(self._tb_btn_style())
         self.btn_blank.setFixedWidth(120)
@@ -234,10 +275,20 @@ class MainWindow(QMainWindow):
         self.btn_blank.clicked.connect(self.toggle_blank_screen)
         self.main_toolbar.addWidget(self.btn_blank)
 
+        self.main_toolbar.addSeparator()
+
+        # iPad連携ボタン
+        self.btn_ipad_connect = QPushButton("📱 iPad 連携")
+        self.btn_ipad_connect.setStyleSheet(self._tb_btn_style())
+        self.btn_ipad_connect.setToolTip("iPad のブラウザから Apple Pencil で手書き描画するための接続情報を表示")
+        self.btn_ipad_connect.clicked.connect(self.show_ipad_dialog)
+        self.main_toolbar.addWidget(self.btn_ipad_connect)
+
         # ツールバーの全ボタンからフォーカスを外す（クリック後に矢印キーが吸われないようにする）
         for btn in (
             btn_open, self.btn_toggle_notes, self.btn_toggle_thumbs,
-            self.btn_timer_toggle, btn_timer_reset, btn_viewer, self.btn_blank
+            self.btn_timer_toggle, btn_timer_reset, btn_viewer, self.btn_sketchbook, self.btn_blank,
+            self.btn_ipad_connect
         ):
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -299,8 +350,10 @@ class MainWindow(QMainWindow):
             self.viewer.toggle_fullscreen()
 
     def toggle_blank_screen(self):
-        if self.viewer:
-            self.viewer.toggle_blank()
+        self.controller.toggle_blank()
+
+    def toggle_sketchbook(self):
+        self.controller.toggle_sketchbook()
 
     def _on_blank_state_changed(self, is_blank: bool):
         if hasattr(self, "btn_blank"):
@@ -312,6 +365,17 @@ class MainWindow(QMainWindow):
             else:
                 self.btn_blank.setText("⬛ 暗転 (B)")
                 self.btn_blank.setStyleSheet(self._tb_btn_style())
+
+    def _on_sketchbook_state_changed(self, is_sketchbook: bool):
+        if hasattr(self, "btn_sketchbook"):
+            if is_sketchbook:
+                self.btn_sketchbook.setText("📋 板書中 (S)")
+                self.btn_sketchbook.setStyleSheet(
+                    "QPushButton { background-color: #007acc; color: #ffffff; border: 1px solid #38bdf8; border-radius: 3px; padding: 4px 10px; font-size: 12px; font-weight: bold; }"
+                )
+            else:
+                self.btn_sketchbook.setText("📋 板書 (S)")
+                self.btn_sketchbook.setStyleSheet(self._tb_btn_style())
 
     def _toggle_timer(self, button: QPushButton):
         if self.elapsed_timer.isActive():
@@ -351,6 +415,12 @@ class MainWindow(QMainWindow):
             # 最初のページを表示
             self.controller.set_page(0)
             self._update_current_page_display(0)
+
+            # iPad 側へも新しいPDFの情報を同期
+            if hasattr(self, "web_server") and self.web_server:
+                init_data = self._get_web_status()
+                init_data["type"] = "state_sync"
+                self.web_server.broadcast(init_data)
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"PDFファイルの読み込みに失敗しました:\n{str(e)}")
 
@@ -392,6 +462,105 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "エラー", f"ノートの保存に失敗しました:\n{str(e)}")
 
+    def render_current_page_image_with_sketch(self) -> QPixmap | None:
+        """現在のページ（またはスケッチブック）に手書きストローク・テキストを合成した高品質 QPixmap を生成"""
+        if self.controller.is_sketchbook:
+            w, h = 1920, 1080
+            if self.pdf_reader and len(self.pdf_reader) > 0:
+                pm = self.pdf_reader.get_page_image(self.controller.current_page, auto_crop=True, dpi=self.render_dpi)
+                if pm and not pm.isNull():
+                    w, h = pm.width(), pm.height()
+            pixmap = QPixmap(w, h)
+            pixmap.fill(Qt.GlobalColor.white)
+        else:
+            pixmap = None
+            if self.pdf_reader:
+                pm = self.pdf_reader.get_page_image(self.controller.current_page, auto_crop=True, dpi=self.render_dpi)
+                if pm and not pm.isNull():
+                    pixmap = pm.copy()
+
+            if not pixmap or pixmap.isNull():
+                pixmap = QPixmap(1920, 1080)
+                pixmap.fill(QColor("#1e1e1e"))
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        w = pixmap.width()
+        h = pixmap.height()
+        base_dim = min(w, h)
+
+        # ストローク描画
+        strokes = self.controller.get_strokes_for_page(self.controller.current_page)
+        for stroke in strokes:
+            if not stroke.points:
+                continue
+            color = QColor(stroke.color)
+            color.setAlphaF(stroke.opacity)
+            pen_w = max(2.0, base_dim * stroke.width_ratio)
+            pen = QPen(color, pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+
+            if len(stroke.points) == 1:
+                painter.setBrush(QBrush(color))
+                p0x = stroke.points[0][0] * w
+                p0y = stroke.points[0][1] * h
+                painter.drawEllipse(QPointF(p0x, p0y), pen_w / 2.0, pen_w / 2.0)
+                continue
+
+            path = create_smooth_path(stroke.points, 0.0, 0.0, w, h)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+
+        # テキスト描画
+        texts = self.controller.get_texts_for_page(self.controller.current_page)
+        for item in texts:
+            if not item.text:
+                continue
+            font_size = max(12, int(base_dim * (item.size * 0.0015)))
+            font = QFont()
+            font.setPixelSize(font_size)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(item.color)))
+            metrics = painter.fontMetrics()
+            tx = item.norm_x * w
+            ty = item.norm_y * h
+            painter.drawText(int(tx + 6), int(ty + metrics.ascent() + 3), item.text)
+
+        painter.end()
+        return pixmap
+
+    def save_current_page_sketch(self, filepath: str | None = None):
+        """現在のページのスケッチを画像ファイルとして保存"""
+        pixmap = self.render_current_page_image_with_sketch()
+        if not pixmap or pixmap.isNull():
+            QMessageBox.warning(self, "保存不可", "保存するスライドまたはスケッチがありません。")
+            return
+
+        if not filepath:
+            if self.controller.is_sketchbook:
+                default_name = f"sketchbook_{QDateTime.currentDateTime().toString('yyyyMMdd_hhmmss')}.png"
+            else:
+                default_name = f"slide_page_{self.controller.current_page + 1}.png"
+
+            filepath, _ = QFileDialog.getSaveFileName(
+                self,
+                "現在のページのスケッチを画像保存",
+                default_name,
+                "PNG画像 (*.png);;すべてのファイル (*.*)",
+                options=QFileDialog.Option.DontUseNativeDialog
+            )
+
+        if filepath:
+            if not filepath.lower().endswith(".png"):
+                filepath += ".png"
+            if pixmap.save(filepath, "PNG"):
+                QMessageBox.information(self, "保存完了", f"スケッチを画像として保存しました:\n{os.path.basename(filepath)}")
+            else:
+                QMessageBox.warning(self, "保存失敗", "画像の保存に失敗しました。")
+
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.KeyPress:
             # ノートエディタ編集中やスライド上のテキスト入力中は通常の文字入力・カーソル移動を最優先
@@ -408,8 +577,13 @@ class MainWindow(QMainWindow):
                 self.controller.prev_page()
                 return True
             elif key == Qt.Key.Key_B:
-                if self.viewer:
-                    self.viewer.toggle_blank()
+                self.controller.toggle_blank()
+                return True
+            elif key in (Qt.Key.Key_S, Qt.Key.Key_W):
+                self.controller.toggle_sketchbook()
+                return True
+            elif key == Qt.Key.Key_H:
+                self.controller.toggle_sketch_visibility()
                 return True
 
         return super().eventFilter(watched, event)
@@ -430,13 +604,354 @@ class MainWindow(QMainWindow):
                 self.controller.prev_page()
                 return
         elif key == Qt.Key.Key_B:
-            if not is_typing and self.viewer:
-                self.viewer.toggle_blank()
+            if not is_typing:
+                self.controller.toggle_blank()
+                return
+        elif key in (Qt.Key.Key_S, Qt.Key.Key_W):
+            if not is_typing:
+                self.controller.toggle_sketchbook()
+                return
+        elif key == Qt.Key.Key_H:
+            if not is_typing:
+                self.controller.toggle_sketch_visibility()
                 return
 
         super().keyPressEvent(event)
 
+    # ==========================================
+    # iPad / Web リモート連携ハンドラ
+    # ==========================================
+    def _connect_web_signals(self):
+        self.web_bridge.stroke_started.connect(self._on_web_stroke_started)
+        self.web_bridge.stroke_moved.connect(self._on_web_stroke_moved)
+        self.web_bridge.stroke_ended.connect(self._on_web_stroke_ended)
+        self.web_bridge.pointer_updated.connect(self._on_web_pointer_updated)
+        self.web_bridge.erase_requested.connect(self._on_web_erase_requested)
+        self.web_bridge.line_update_command.connect(self._on_web_line_update_command)
+        self.web_bridge.page_command.connect(self._on_web_page_command)
+        self.web_bridge.undo_requested.connect(self._on_web_undo_requested)
+        self.web_bridge.clear_requested.connect(self._on_web_clear_requested)
+        self.web_bridge.blank_command.connect(self._on_web_blank_command)
+        self.web_bridge.sketchbook_command.connect(self._on_web_sketchbook_command)
+        self.web_bridge.toggle_blank_command.connect(self._on_web_toggle_blank_command)
+        self.web_bridge.toggle_sketchbook_command.connect(self._on_web_toggle_sketchbook_command)
+        self.web_bridge.sketch_visibility_command.connect(self._on_web_sketch_visibility_command)
+        self.web_bridge.toggle_sketch_visibility_command.connect(self._on_web_toggle_sketch_visibility_command)
+        self.web_bridge.save_sketch_requested.connect(self._on_web_save_sketch_requested)
+        self.web_bridge.client_count_changed.connect(self._on_web_client_count_changed)
+
+        # コントローラからの変化を Web クライアントへブロードキャスト（ツール選択は独立管理のため除外）
+        self.controller.page_changed.connect(self._sync_web_page_changed)
+        self.controller.stroke_started.connect(self._sync_web_stroke_started)
+        self.controller.stroke_added_point.connect(self._sync_web_stroke_added_point)
+        self.controller.stroke_finished.connect(self._sync_web_stroke_finished)
+        self.controller.strokes_cleared.connect(self._sync_web_strokes_cleared)
+        self.controller.stroke_undone.connect(self._sync_web_stroke_undone)
+        self.controller.strokes_updated.connect(self._sync_web_strokes_updated)
+        self.controller.pointer_updated.connect(self._sync_web_pointer_updated)
+        self.controller.blank_state_changed.connect(self._sync_web_blank_changed)
+        self.controller.sketchbook_state_changed.connect(self._sync_web_sketchbook_changed)
+        self.controller.sketch_visibility_changed.connect(self._sync_web_sketch_visibility_changed)
+
+    def _get_slide_image_bytes(self, page_idx: int) -> bytes | None:
+        if not self.pdf_reader:
+            return None
+        # iPad用に高速かつ Retina でも十分鮮明な 180 DPI でレンダリング
+        pixmap = self.pdf_reader.get_page_image(page_idx, auto_crop=True, dpi=180)
+        if not pixmap or pixmap.isNull():
+            return None
+        buf = QByteArray()
+        qbuf = QBuffer(buf)
+        qbuf.open(QIODevice.OpenModeFlag.WriteOnly)
+        pixmap.save(qbuf, "PNG")
+        return bytes(buf.data())
+
+    def _get_web_status(self) -> dict:
+        strokes_data = []
+        current_page = self.controller.current_page
+        if current_page in self.controller.page_strokes:
+            for s in self.controller.page_strokes[current_page]:
+                strokes_data.append({
+                    "color": s.color,
+                    "width_ratio": s.width_ratio,
+                    "opacity": s.opacity,
+                    "points": s.points
+                })
+        sketchbook_data = []
+        for s in self.controller.sketchbook_strokes:
+            sketchbook_data.append({
+                "color": s.color,
+                "width_ratio": s.width_ratio,
+                "opacity": s.opacity,
+                "points": s.points
+            })
+        return {
+            "currentPage": self.controller.current_page,
+            "totalPages": self.controller.total_pages,
+            "currentTool": self.controller.current_tool,
+            "color": self.controller.pen_color,
+            "highlighterColor": self.controller.highlighter_color,
+            "penOpacity": self.controller.pen_opacity,
+            "highlighterOpacity": self.controller.highlighter_opacity,
+            "toolSizes": self.controller.tool_sizes,
+            "toolRanges": self.controller.tool_ranges,
+            "eraserMode": self.controller.eraser_mode,
+            "isLineMode": self.controller.is_line_mode,
+            "isBlank": self.controller.is_blank,
+            "isSketchbook": self.controller.is_sketchbook,
+            "isSketchVisible": self.controller.is_sketch_visible,
+            "strokes": strokes_data,
+            "sketchbookStrokes": sketchbook_data,
+        }
+
+    def _on_web_stroke_started(self, data: dict):
+        self._is_handling_web_stroke = True
+        tool = data.get("tool", "pen")
+        color = data.get("color")
+        if not color:
+            color = self.controller.highlighter_color if tool == "highlighter" else self.controller.pen_color
+
+        width_ratio = data.get("widthRatio")
+        if width_ratio is None:
+            size = data.get("size", 5)
+            width_ratio = float(size) * 0.001
+
+        opacity = self.controller.highlighter_opacity if tool == "highlighter" else self.controller.pen_opacity
+
+        # PC側の current_tool や is_line_mode などの選択状態は一切変えずに直接ストロークを開始
+        self.controller.begin_custom_stroke(
+            color=color,
+            width_ratio=float(width_ratio),
+            opacity=opacity,
+            norm_x=float(data["normX"]),
+            norm_y=float(data["normY"]),
+            pressure=1.0
+        )
+
+    def _on_web_stroke_moved(self, data: dict):
+        self._is_handling_web_stroke = True
+        self.controller.add_stroke_point(
+            data["normX"],
+            data["normY"],
+            pressure=1.0  # 筆圧検知は無効化
+        )
+
+    def _on_web_stroke_ended(self):
+        try:
+            self.controller.end_stroke()
+        finally:
+            self._is_handling_web_stroke = False
+
+    def _on_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool):
+        self.controller.update_pointer(norm_x, norm_y, visible)
+
+    def _on_web_erase_requested(self, data: dict):
+        norm_x = float(data.get("normX", 0.0))
+        norm_y = float(data.get("normY", 0.0))
+        mode = data.get("mode")
+        size = data.get("size")
+        rect = self.slide_view.canvas._get_slide_rect()
+        aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
+        eraser_size = int(size) if size is not None else self.controller.get_tool_size("eraser")
+        threshold = max(0.008, eraser_size * 0.001)
+        self.controller.erase_at_point(
+            norm_x, norm_y,
+            threshold=threshold,
+            aspect_ratio=aspect_ratio,
+            override_mode=mode
+        )
+
+    def _on_web_eraser_mode_command(self, mode: str):
+        self.controller.set_eraser_mode(mode)
+
+    def _on_web_line_mode_command(self, is_line: bool):
+        self.controller.set_line_mode(is_line)
+
+    def _on_web_line_update_command(self, norm_x: float, norm_y: float):
+        self.controller.update_line_endpoint(norm_x, norm_y, pressure=1.0)
+
+    def _on_web_page_command(self, cmd: str, page_idx: int):
+        if cmd == "next":
+            self.controller.next_page()
+        elif cmd == "prev":
+            self.controller.prev_page()
+        elif cmd == "set":
+            self.controller.set_page(page_idx)
+
+    def _on_web_undo_requested(self):
+        self.controller.undo_current_page_stroke()
+
+    def _on_web_clear_requested(self):
+        self.controller.clear_current_page_strokes()
+
+    def _on_web_blank_command(self, enabled: bool):
+        self.controller.set_blank(enabled)
+
+    def _on_web_toggle_blank_command(self):
+        self.controller.toggle_blank()
+
+    def _on_web_sketchbook_command(self, enabled: bool):
+        self.controller.set_sketchbook(enabled)
+
+    def _on_web_toggle_sketchbook_command(self):
+        self.controller.toggle_sketchbook()
+
+    def _on_web_sketch_visibility_command(self, visible: bool):
+        self.controller.set_sketch_visibility(visible)
+
+    def _on_web_toggle_sketch_visibility_command(self):
+        self.controller.toggle_sketch_visibility()
+
+    def _on_web_save_sketch_requested(self):
+        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
+        if self.controller.is_sketchbook:
+            fname = f"sketchbook_{timestamp}.png"
+        else:
+            fname = f"slide_page_{self.controller.current_page + 1}_{timestamp}.png"
+
+        save_dir = os.path.dirname(self.pdf_reader.path) if self.pdf_reader else os.getcwd()
+        filepath = os.path.join(save_dir, fname)
+        pixmap = self.render_current_page_image_with_sketch()
+        if pixmap and not pixmap.isNull():
+            pixmap.save(filepath, "PNG")
+            if hasattr(self, "web_server") and self.web_server:
+                self.web_server.broadcast({
+                    "type": "sketch_saved",
+                    "filename": fname
+                })
+
+    def _on_web_client_count_changed(self, count: int):
+        if hasattr(self, "btn_ipad_connect"):
+            if count > 0:
+                self.btn_ipad_connect.setText(f"📱 iPad ({count})")
+                self.btn_ipad_connect.setStyleSheet(
+                    "QPushButton { background-color: #065f46; color: #34d399; border: 1px solid #059669; border-radius: 3px; padding: 4px 10px; font-size: 12px; font-weight: bold; }"
+                )
+            else:
+                self.btn_ipad_connect.setText("📱 iPad 連携")
+                self.btn_ipad_connect.setStyleSheet(self._tb_btn_style())
+
+    def _sync_web_page_changed(self, index: int):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "page_changed",
+                "page": index,
+                "totalPages": self.controller.total_pages
+            })
+
+    def _sync_web_stroke_started(self, page_index: int, stroke):
+        if self._is_handling_web_stroke:
+            return
+        if hasattr(self, "web_server") and self.web_server:
+            p0 = stroke.points[0] if stroke.points else (0.0, 0.0, 1.0)
+            self.web_server.broadcast({
+                "type": "remote_stroke_start",
+                "page": page_index,
+                "color": stroke.color,
+                "widthRatio": stroke.width_ratio,
+                "opacity": stroke.opacity,
+                "p0": [p0[0], p0[1]]
+            })
+
+    def _sync_web_stroke_added_point(self, page_index: int, norm_x: float, norm_y: float, pressure: float):
+        if self._is_handling_web_stroke:
+            return
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "remote_stroke_move",
+                "page": page_index,
+                "normX": norm_x,
+                "normY": norm_y
+            })
+
+    def _sync_web_stroke_finished(self, page_index: int):
+        if self._is_handling_web_stroke:
+            return
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "remote_stroke_end",
+                "page": page_index
+            })
+
+    def _sync_web_strokes_cleared(self, index: int):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "strokes_cleared",
+                "page": index
+            })
+
+    def _sync_web_stroke_undone(self, index: int):
+        if hasattr(self, "web_server") and self.web_server:
+            status = self._get_web_status()
+            target_strokes = status["sketchbookStrokes"] if self.controller.is_sketchbook else status["strokes"]
+            self.web_server.broadcast({
+                "type": "stroke_undone",
+                "page": index,
+                "strokes": target_strokes
+            })
+
+    def _sync_web_strokes_updated(self, index: int):
+        if hasattr(self, "web_server") and self.web_server:
+            status = self._get_web_status()
+            target_strokes = status["sketchbookStrokes"] if self.controller.is_sketchbook else status["strokes"]
+            self.web_server.broadcast({
+                "type": "strokes_updated",
+                "page": index,
+                "strokes": target_strokes
+            })
+
+    def _sync_web_blank_changed(self, enabled: bool):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "blank_changed",
+                "enabled": enabled
+            })
+
+    def _sync_web_sketchbook_changed(self, enabled: bool):
+        if hasattr(self, "web_server") and self.web_server:
+            sketchbook_data = [
+                {
+                    "color": s.color,
+                    "width_ratio": s.width_ratio,
+                    "opacity": s.opacity,
+                    "points": s.points
+                }
+                for s in self.controller.sketchbook_strokes
+            ]
+            self.web_server.broadcast({
+                "type": "sketchbook_changed",
+                "enabled": enabled,
+                "strokes": sketchbook_data
+            })
+
+    def _sync_web_sketch_visibility_changed(self, visible: bool):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "sketch_visibility_changed",
+                "visible": visible
+            })
+
+    def _sync_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "pointer_updated",
+                "normX": norm_x,
+                "normY": norm_y,
+                "visible": visible
+            })
+
+    def show_ipad_dialog(self):
+        dialog = IpadDialog(
+            self.web_bridge,
+            http_port=self.web_server.http_port,
+            passcode=self.web_server.passcode,
+            parent=self
+        )
+        dialog.exec()
+
     def closeEvent(self, event):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.stop()
         if self.pdf_reader:
             self.note_panel.save_current_note_to_memory()
             try:

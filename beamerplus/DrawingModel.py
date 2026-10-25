@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 import math
 from PySide6.QtCore import QObject, Signal, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPainterPath
 
 
 @dataclass
@@ -11,6 +11,39 @@ class Stroke:
     opacity: float = 0.85
     # (norm_x, norm_y, pressure): pressure は 0.0 ~ 1.0 (マウス時は1.0)
     points: list[tuple[float, float, float]] = field(default_factory=list)
+
+
+def create_smooth_path(points: list[tuple[float, ...]], origin_x: float, origin_y: float, scale_w: float, scale_h: float) -> QPainterPath:
+    """点列から中点二次ベジェスプライン曲線を用いた滑らかな QPainterPath を生成する"""
+    path = QPainterPath()
+    if not points:
+        return path
+
+    p0x = origin_x + points[0][0] * scale_w
+    p0y = origin_y + points[0][1] * scale_h
+    path.moveTo(p0x, p0y)
+
+    if len(points) == 2:
+        path.lineTo(origin_x + points[1][0] * scale_w, origin_y + points[1][1] * scale_h)
+    elif len(points) >= 3:
+        p1x = origin_x + points[1][0] * scale_w
+        p1y = origin_y + points[1][1] * scale_h
+        path.lineTo((p0x + p1x) * 0.5, (p0y + p1y) * 0.5)
+
+        for i in range(1, len(points) - 1):
+            cpx = origin_x + points[i][0] * scale_w
+            cpy = origin_y + points[i][1] * scale_h
+            next_x = origin_x + points[i + 1][0] * scale_w
+            next_y = origin_y + points[i + 1][1] * scale_h
+            mid_x = (cpx + next_x) * 0.5
+            mid_y = (cpy + next_y) * 0.5
+            path.quadTo(cpx, cpy, mid_x, mid_y)
+
+        last_x = origin_x + points[-1][0] * scale_w
+        last_y = origin_y + points[-1][1] * scale_h
+        path.lineTo(last_x, last_y)
+
+    return path
 
 
 @dataclass
@@ -177,6 +210,9 @@ class PresentationController(QObject):
     color_changed = Signal(str, str)                      # tool_name, hex_color
     line_mode_changed = Signal(bool)                      # 直線モードのON/OFF
     eraser_mode_changed = Signal(str)                     # "partial" (通常消しゴム) / "stroke" (オブジェクト消しゴム)
+    blank_state_changed = Signal(bool)                    # ブランクスクリーン（暗転）のON/OFF
+    sketchbook_state_changed = Signal(bool)               # スケッチブック（白紙）のON/OFF
+    sketch_visibility_changed = Signal(bool)              # スケッチ（描画）の表示/非表示
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -185,10 +221,18 @@ class PresentationController(QObject):
         self.current_tool: str = "hand"       # 起動時は通常モード
         self.is_line_mode: bool = False       # 直線モードON/OFF
         self.eraser_mode: str = "partial"     # "partial" (通常消しゴム) / "stroke" (オブジェクト消しゴム)
+        self.is_blank: bool = False           # ブランクスクリーン（暗転）状態
+        self.is_sketchbook: bool = False      # スケッチブック（白紙）モード状態
+        self.is_sketch_visible: bool = True   # スケッチ（手書き描画）の表示/非表示状態
         
         # ページごとのストローク保存: dict[page_index, list[Stroke]]
         self.page_strokes: dict[int, list[Stroke]] = {}
         self.current_stroke: Stroke | None = None
+
+        # スケッチブック用ストローク・テキスト・履歴保存
+        self.sketchbook_strokes: list[Stroke] = []
+        self.sketchbook_texts: list[TextItem] = []
+        self.sketchbook_history: list[tuple[str, object]] = []
 
         # ページごとのテキスト保存: dict[page_index, list[TextItem]]
         self.page_texts: dict[int, list[TextItem]] = {}
@@ -272,6 +316,30 @@ class PresentationController(QObject):
         new_mode = "stroke" if self.eraser_mode == "partial" else "partial"
         self.set_eraser_mode(new_mode)
 
+    def set_blank(self, enabled: bool):
+        if self.is_blank != enabled:
+            self.is_blank = enabled
+            self.blank_state_changed.emit(enabled)
+
+    def toggle_blank(self):
+        self.set_blank(not self.is_blank)
+
+    def set_sketchbook(self, enabled: bool):
+        if self.is_sketchbook != enabled:
+            self.is_sketchbook = enabled
+            self.sketchbook_state_changed.emit(enabled)
+
+    def toggle_sketchbook(self):
+        self.set_sketchbook(not self.is_sketchbook)
+
+    def set_sketch_visibility(self, visible: bool):
+        if self.is_sketch_visible != visible:
+            self.is_sketch_visible = visible
+            self.sketch_visibility_changed.emit(visible)
+
+    def toggle_sketch_visibility(self):
+        self.set_sketch_visibility(not self.is_sketch_visible)
+
     def get_tool_range(self, tool_name: str) -> tuple[int, int]:
         return self.tool_ranges.get(tool_name, (1, 50))
 
@@ -323,8 +391,27 @@ class PresentationController(QObject):
             color = self.pen_color
             opacity = self.pen_opacity
 
+        self.begin_custom_stroke(color, width_ratio, opacity, norm_x, norm_y, pressure)
+
+    def begin_custom_stroke(
+        self,
+        color: str,
+        width_ratio: float,
+        opacity: float,
+        norm_x: float,
+        norm_y: float,
+        pressure: float = 1.0
+    ):
+        """PC側の選択ツール（current_tool）や色・太さ設定を変更せずに直接ストロークを開始"""
         stroke = Stroke(color=color, width_ratio=width_ratio, opacity=opacity, points=[(norm_x, norm_y, pressure)])
         self.current_stroke = stroke
+
+        if self.is_sketchbook:
+            self.sketchbook_strokes.append(stroke)
+            self.sketchbook_history.append(("stroke", stroke))
+            self.stroke_started.emit(-1, stroke)
+            return
+
         if self.current_page not in self.page_strokes:
             self.page_strokes[self.current_page] = []
         self.page_strokes[self.current_page].append(stroke)
@@ -338,18 +425,21 @@ class PresentationController(QObject):
     def add_stroke_point(self, norm_x: float, norm_y: float, pressure: float = 1.0):
         if self.current_stroke is not None:
             self.current_stroke.points.append((norm_x, norm_y, pressure))
-            self.stroke_added_point.emit(self.current_page, norm_x, norm_y, pressure)
+            page = -1 if self.is_sketchbook else self.current_page
+            self.stroke_added_point.emit(page, norm_x, norm_y, pressure)
 
     def update_line_endpoint(self, norm_x: float, norm_y: float, pressure: float = 1.0):
         if self.current_stroke is not None and len(self.current_stroke.points) >= 1:
             p0 = self.current_stroke.points[0]
             self.current_stroke.points = [p0, (norm_x, norm_y, pressure)]
-            self.stroke_line_updated.emit(self.current_page, norm_x, norm_y)
+            page = -1 if self.is_sketchbook else self.current_page
+            self.stroke_line_updated.emit(page, norm_x, norm_y)
 
     def end_stroke(self):
         if self.current_stroke is not None:
             self.current_stroke = None
-            self.stroke_finished.emit(self.current_page)
+            page = -1 if self.is_sketchbook else self.current_page
+            self.stroke_finished.emit(page)
 
     def add_text(self, norm_x: float, norm_y: float, text: str) -> TextItem | None:
         """指定した相対座標にテキストアイテムを追加"""
@@ -359,6 +449,12 @@ class PresentationController(QObject):
         size = self.get_tool_size("text")
         color = self.text_color
         item = TextItem(text=text, norm_x=norm_x, norm_y=norm_y, color=color, size=size)
+
+        if self.is_sketchbook:
+            self.sketchbook_texts.append(item)
+            self.sketchbook_history.append(("text", item))
+            self.text_added.emit(-1, item)
+            return item
 
         if self.current_page not in self.page_texts:
             self.page_texts[self.current_page] = []
@@ -373,22 +469,80 @@ class PresentationController(QObject):
 
     def get_texts_for_page(self, page_index: int) -> list[TextItem]:
         """指定ページの全テキストアイテムを取得"""
+        if self.is_sketchbook:
+            return self.sketchbook_texts
         return self.page_texts.get(page_index, [])
 
-    def erase_at_point(self, norm_x: float, norm_y: float, threshold: float = 0.02, aspect_ratio: float = 1.0) -> bool:
+    def erase_at_point(
+        self,
+        norm_x: float,
+        norm_y: float,
+        threshold: float = 0.02,
+        aspect_ratio: float = 1.0,
+        override_mode: str | None = None
+    ) -> bool:
         """
         消しゴム処理:
-        - eraser_mode == "stroke" の場合: オブジェクト消しゴム（触れたストローク全体を削除）
-        - eraser_mode == "partial" の場合: 通常消しゴム（円の範囲内のみを部分消去・分割）
+        - mode == "stroke" の場合: オブジェクト消しゴム（触れたストローク全体を削除）
+        - mode == "partial" の場合: 通常消しゴム（円の範囲内のみを部分消去・分割）
         - テキスト: 消しゴムの円とバウンディングボックスが交差したテキストを削除
         """
+        center = (norm_x, norm_y)
+        erased_anything = False
+        mode = override_mode if override_mode else self.eraser_mode
+
+        if self.is_sketchbook:
+            has_strokes = bool(self.sketchbook_strokes)
+            has_texts = bool(self.sketchbook_texts)
+            if not has_strokes and not has_texts:
+                return False
+
+            if has_texts:
+                remaining_texts = []
+                text_erased = False
+                for t_item in self.sketchbook_texts:
+                    if text_intersects_circle(t_item, center, threshold, aspect_ratio):
+                        text_erased = True
+                    else:
+                        remaining_texts.append(t_item)
+                if text_erased:
+                    self.sketchbook_texts = remaining_texts
+                    self.texts_updated.emit(-1)
+                    erased_anything = True
+
+            if has_strokes:
+                if mode == "stroke":
+                    remaining_strokes = []
+                    erased = False
+                    for stroke in self.sketchbook_strokes:
+                        if stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
+                            erased = True
+                        else:
+                            remaining_strokes.append(stroke)
+                    if erased:
+                        self.sketchbook_strokes = remaining_strokes
+                        self.strokes_updated.emit(-1)
+                        erased_anything = True
+                else:
+                    new_strokes: list[Stroke] = []
+                    erased_any = False
+                    for stroke in self.sketchbook_strokes:
+                        if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
+                            new_strokes.append(stroke)
+                        else:
+                            erased_any = True
+                            clipped = clip_stroke_by_circle(stroke, center, threshold, aspect_ratio)
+                            new_strokes.extend(clipped)
+                    if erased_any:
+                        self.sketchbook_strokes = new_strokes
+                        self.strokes_updated.emit(-1)
+                        erased_anything = True
+            return erased_anything
+
         has_strokes = self.current_page in self.page_strokes and bool(self.page_strokes[self.current_page])
         has_texts = self.current_page in self.page_texts and bool(self.page_texts[self.current_page])
         if not has_strokes and not has_texts:
             return False
-
-        center = (norm_x, norm_y)
-        erased_anything = False
 
         # 1. テキスト消去判定
         if has_texts:
@@ -406,7 +560,7 @@ class PresentationController(QObject):
 
         # 2. ストローク消去判定
         if has_strokes:
-            if self.eraser_mode == "stroke":
+            if mode == "stroke":
                 # オブジェクト消しゴム（線分交差判定）
                 remaining_strokes = []
                 erased = False
@@ -443,6 +597,18 @@ class PresentationController(QObject):
         return self.erase_at_point(norm_x, norm_y, threshold, aspect_ratio)
 
     def clear_current_page_strokes(self):
+        if self.is_sketchbook:
+            had_strokes = bool(self.sketchbook_strokes)
+            had_texts = bool(self.sketchbook_texts)
+            if had_strokes:
+                self.sketchbook_strokes = []
+                self.strokes_cleared.emit(-1)
+            if had_texts:
+                self.sketchbook_texts = []
+                self.texts_updated.emit(-1)
+            self.sketchbook_history = []
+            return
+
         had_strokes = self.current_page in self.page_strokes and bool(self.page_strokes[self.current_page])
         had_texts = self.current_page in self.page_texts and bool(self.page_texts[self.current_page])
 
@@ -456,6 +622,22 @@ class PresentationController(QObject):
             self.page_history[self.current_page] = []
 
     def undo_current_page_stroke(self):
+        if self.is_sketchbook:
+            if self.sketchbook_history:
+                kind, item = self.sketchbook_history.pop()
+                if kind == "stroke":
+                    if item in self.sketchbook_strokes:
+                        self.sketchbook_strokes.remove(item)
+                        self.stroke_undone.emit(-1)
+                elif kind == "text":
+                    if item in self.sketchbook_texts:
+                        self.sketchbook_texts.remove(item)
+                        self.texts_updated.emit(-1)
+            elif self.sketchbook_strokes:
+                self.sketchbook_strokes.pop()
+                self.stroke_undone.emit(-1)
+            return
+
         if self.current_page in self.page_history and self.page_history[self.current_page]:
             kind, item = self.page_history[self.current_page].pop()
             if kind == "stroke":
@@ -470,5 +652,15 @@ class PresentationController(QObject):
             self.page_strokes[self.current_page].pop()
             self.stroke_undone.emit(self.current_page)
 
+    def undo(self):
+        """undo_current_page_stroke のエイリアス"""
+        self.undo_current_page_stroke()
+
+    def clear_strokes(self):
+        """clear_current_page_strokes のエイリアス"""
+        self.clear_current_page_strokes()
+
     def get_strokes_for_page(self, page_index: int) -> list[Stroke]:
+        if self.is_sketchbook:
+            return self.sketchbook_strokes
         return self.page_strokes.get(page_index, [])

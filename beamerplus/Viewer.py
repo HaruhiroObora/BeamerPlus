@@ -8,7 +8,7 @@ from PySide6.QtGui import (
     QPainterPath, QRadialGradient, QBrush, QFont
 )
 
-from beamerplus.DrawingModel import PresentationController, Stroke, TextItem
+from beamerplus.DrawingModel import PresentationController, Stroke, TextItem, create_smooth_path
 
 # スライド短辺に対するポインタ半径の比率 (視認性の高い大きめのレーザーポインタ)
 POINTER_RADIUS_RATIO = 0.018
@@ -48,6 +48,7 @@ class Viewer(QMainWindow):
         self.stroke_items: list[QGraphicsPathItem] = []
         self.active_path_item: QGraphicsPathItem | None = None
         self.active_path: QPainterPath | None = None
+        self.active_points: list[tuple[float, float]] = []
 
         # テキスト管理
         self.text_items: list[QGraphicsSimpleTextItem] = []
@@ -84,6 +85,16 @@ class Viewer(QMainWindow):
         controller.text_added.connect(self.on_text_added)
         controller.texts_updated.connect(self.on_texts_updated)
         controller.tool_size_changed.connect(self.on_tool_size_changed)
+        controller.blank_state_changed.connect(self.on_blank_state_changed)
+        controller.sketchbook_state_changed.connect(self.on_sketchbook_state_changed)
+        controller.sketch_visibility_changed.connect(self.on_sketch_visibility_changed)
+
+    def _is_target_page(self, page_index: int) -> bool:
+        if not self.controller:
+            return True
+        if self.controller.is_sketchbook:
+            return page_index == -1
+        return page_index == self.controller.current_page
 
     def _setup_pointer_item(self):
         """スライド解像度とコントローラ設定に応じたポインタアイテムのサイズとグラデーションを更新"""
@@ -167,12 +178,18 @@ class Viewer(QMainWindow):
         color.setAlphaF(stroke.opacity)
         pen = QPen(color, pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
 
-        path = QPainterPath()
-        p0 = stroke.points[0]
-        path.moveTo(p0[0] * w, p0[1] * h)
-        for pt in stroke.points[1:]:
-            path.lineTo(pt[0] * w, pt[1] * h)
+        if len(stroke.points) == 1:
+            dot_item = self.scene.addEllipse(
+                stroke.points[0][0] * w - pen_width / 2.0,
+                stroke.points[0][1] * h - pen_width / 2.0,
+                pen_width, pen_width,
+                QPen(Qt.PenStyle.NoPen), QBrush(color)
+            )
+            dot_item.setZValue(10)
+            self.stroke_items.append(dot_item)
+            return
 
+        path = create_smooth_path(stroke.points, 0.0, 0.0, w, h)
         path_item = self.scene.addPath(path, pen)
         path_item.setZValue(10)
         self.stroke_items.append(path_item)
@@ -206,21 +223,21 @@ class Viewer(QMainWindow):
     def on_pointer_updated(self, norm_x: float, norm_y: float, visible: bool):
         if not self.pointer_item:
             return
-        if not visible or not self.page_pixmap or self.is_blank:
+        if not visible or self.is_blank or self.scene.sceneRect().isEmpty():
             self.pointer_item.setVisible(False)
             return
 
-        w = self.page_pixmap.width()
-        h = self.page_pixmap.height()
+        w = self.scene.sceneRect().width()
+        h = self.scene.sceneRect().height()
         self.pointer_item.setPos(norm_x * w, norm_y * h)
         self.pointer_item.setVisible(True)
 
     def on_stroke_started(self, page_index: int, stroke: Stroke):
-        if not self.page_pixmap or (self.controller and page_index != self.controller.current_page):
+        if not self._is_target_page(page_index) or self.scene.sceneRect().isEmpty():
             return
         
-        w = self.page_pixmap.width()
-        h = self.page_pixmap.height()
+        w = self.scene.sceneRect().width()
+        h = self.scene.sceneRect().height()
         base_dim = min(w, h)
         pen_width = max(2.5, base_dim * stroke.width_ratio)
 
@@ -228,8 +245,9 @@ class Viewer(QMainWindow):
         color.setAlphaF(stroke.opacity)
         pen = QPen(color, pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
 
-        self.active_path = QPainterPath()
         p0 = stroke.points[0]
+        self.active_points = [(p0[0], p0[1])]
+        self.active_path = QPainterPath()
         self.active_path.moveTo(p0[0] * w, p0[1] * h)
 
         self.active_path_item = self.scene.addPath(self.active_path, pen)
@@ -237,25 +255,22 @@ class Viewer(QMainWindow):
         self.stroke_items.append(self.active_path_item)
 
     def on_stroke_added_point(self, page_index: int, norm_x: float, norm_y: float, pressure: float = 1.0):
-        if not self.page_pixmap or self.active_path is None or self.active_path_item is None:
-            return
-        if self.controller and page_index != self.controller.current_page:
+        if not self._is_target_page(page_index) or self.active_path_item is None or self.scene.sceneRect().isEmpty():
             return
 
-        w = self.page_pixmap.width()
-        h = self.page_pixmap.height()
-        self.active_path.lineTo(norm_x * w, norm_y * h)
+        w = self.scene.sceneRect().width()
+        h = self.scene.sceneRect().height()
+        self.active_points.append((norm_x, norm_y))
+        self.active_path = create_smooth_path(self.active_points, 0.0, 0.0, w, h)
         self.active_path_item.setPath(self.active_path)
 
     def on_stroke_line_updated(self, page_index: int, norm_x: float, norm_y: float):
         """直線の終点ドラッグ中プレビュー更新"""
-        if not self.page_pixmap or self.active_path_item is None or not self.controller:
-            return
-        if page_index != self.controller.current_page:
+        if not self._is_target_page(page_index) or self.active_path_item is None or not self.controller or self.scene.sceneRect().isEmpty():
             return
 
-        w = self.page_pixmap.width()
-        h = self.page_pixmap.height()
+        w = self.scene.sceneRect().width()
+        h = self.scene.sceneRect().height()
         if self.controller.current_stroke and self.controller.current_stroke.points:
             p0 = self.controller.current_stroke.points[0]
             new_path = QPainterPath()
@@ -271,12 +286,17 @@ class Viewer(QMainWindow):
     def on_stroke_finished(self, page_index: int):
         self.active_path = None
         self.active_path_item = None
+        self.active_points = []
 
     def on_strokes_cleared(self, page_index: int):
+        if not self._is_target_page(page_index):
+            return
         self._clear_scene_strokes()
         self._clear_scene_texts()
 
     def on_stroke_undone(self, page_index: int):
+        if not self._is_target_page(page_index):
+            return
         if self.stroke_items:
             last_item = self.stroke_items.pop()
             try:
@@ -285,12 +305,12 @@ class Viewer(QMainWindow):
                 pass
 
     def on_text_added(self, page_index: int, item: TextItem):
-        if not self.page_pixmap or (self.controller and page_index != self.controller.current_page):
+        if not self._is_target_page(page_index) or self.scene.sceneRect().isEmpty():
             return
         self._draw_complete_text(item)
 
     def on_texts_updated(self, page_index: int):
-        if not self.page_pixmap or (self.controller and page_index != self.controller.current_page):
+        if not self._is_target_page(page_index) or self.scene.sceneRect().isEmpty():
             return
         self._clear_scene_texts()
         if self.controller:
@@ -300,7 +320,7 @@ class Viewer(QMainWindow):
 
     def on_strokes_updated(self, page_index: int):
         """消しゴム等でストロークが変更されたときの全ストローク再描画"""
-        if not self.page_pixmap:
+        if not self._is_target_page(page_index) or self.scene.sceneRect().isEmpty():
             return
         self._clear_scene_strokes()
 
@@ -309,8 +329,60 @@ class Viewer(QMainWindow):
             for stroke in page_strokes:
                 self._draw_complete_stroke(stroke)
 
+    def on_blank_state_changed(self, enabled: bool):
+        self.is_blank = enabled
+        if self.is_blank:
+            self.blank_overlay.setGeometry(self.rect())
+            self.blank_overlay.show()
+            self.blank_overlay.raise_()
+            if self.pointer_item:
+                self.pointer_item.setVisible(False)
+        else:
+            self.blank_overlay.hide()
+        self.blank_state_changed.emit(self.is_blank)
+
+    def on_sketch_visibility_changed(self, visible: bool):
+        for item in self.stroke_items:
+            item.setVisible(visible)
+        for item in self.text_items:
+            item.setVisible(visible)
+
+    def on_sketchbook_state_changed(self, enabled: bool):
+        self._clear_scene_strokes()
+        self._clear_scene_texts()
+
+        if enabled:
+            # スケッチブック（白紙）モード
+            w = self.page_pixmap.width() if self.page_pixmap and not self.page_pixmap.isNull() else 1920
+            h = self.page_pixmap.height() if self.page_pixmap and not self.page_pixmap.isNull() else 1080
+            white_pixmap = QPixmap(w, h)
+            white_pixmap.fill(Qt.GlobalColor.white)
+            self.pixmap_item.setPixmap(white_pixmap)
+            self.scene.setSceneRect(QRectF(white_pixmap.rect()))
+            self._setup_pointer_item()
+
+            if self.controller:
+                for stroke in self.controller.sketchbook_strokes:
+                    self._draw_complete_stroke(stroke)
+                for t_item in self.controller.sketchbook_texts:
+                    self._draw_complete_text(t_item)
+        else:
+            # 通常スライド復帰
+            if self.page_pixmap and not self.page_pixmap.isNull():
+                self.pixmap_item.setPixmap(self.page_pixmap)
+                self.scene.setSceneRect(QRectF(self.page_pixmap.rect()))
+                self._setup_pointer_item()
+
+                if self.controller:
+                    for stroke in self.controller.get_strokes_for_page(self.controller.current_page):
+                        self._draw_complete_stroke(stroke)
+                    for t_item in self.controller.get_texts_for_page(self.controller.current_page):
+                        self._draw_complete_text(t_item)
+
+        self.fit_view()
+
     def fit_view(self):
-        if self.page_pixmap and not self.scene.sceneRect().isEmpty():
+        if not self.scene.sceneRect().isEmpty():
             self.graphics_view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def resizeEvent(self, event: QResizeEvent):
@@ -327,16 +399,10 @@ class Viewer(QMainWindow):
 
     def toggle_blank(self):
         """ブランクスクリーン（ウィンドウを維持したまま全画面を真っ黒にする）"""
-        self.is_blank = not self.is_blank
-        if self.is_blank:
-            self.blank_overlay.setGeometry(self.rect())
-            self.blank_overlay.show()
-            self.blank_overlay.raise_()
-            if self.pointer_item:
-                self.pointer_item.setVisible(False)
+        if self.controller:
+            self.controller.toggle_blank()
         else:
-            self.blank_overlay.hide()
-        self.blank_state_changed.emit(self.is_blank)
+            self.on_blank_state_changed(not self.is_blank)
 
     def blank_screen(self):
         self.toggle_blank()
@@ -349,6 +415,12 @@ class Viewer(QMainWindow):
             self.showNormal()
         elif key == Qt.Key.Key_B:
             self.toggle_blank()
+        elif key in (Qt.Key.Key_S, Qt.Key.Key_W):
+            if self.controller:
+                self.controller.toggle_sketchbook()
+        elif key == Qt.Key.Key_H:
+            if self.controller:
+                self.controller.toggle_sketch_visibility()
         elif self.controller:
             if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space):
                 self.controller.next_page()

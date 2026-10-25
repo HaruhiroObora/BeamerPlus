@@ -6,7 +6,7 @@ from PySide6.QtGui import (
     QPointingDevice, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QFont
 )
 
-from beamerplus.DrawingModel import PresentationController, Stroke, TextItem
+from beamerplus.DrawingModel import PresentationController, Stroke, TextItem, create_smooth_path
 
 
 class SlideCanvas(QWidget):
@@ -35,6 +35,9 @@ class SlideCanvas(QWidget):
         self.controller.line_mode_changed.connect(self._on_line_mode_changed)
         self.controller.eraser_mode_changed.connect(self._on_eraser_mode_changed)
         self.controller.color_changed.connect(self._on_color_changed)
+        self.controller.blank_state_changed.connect(self._on_blank_state_changed)
+        self.controller.sketchbook_state_changed.connect(self._on_sketchbook_state_changed)
+        self.controller.sketch_visibility_changed.connect(self._on_sketch_visibility_changed)
 
         self.pointer_pos: tuple[float, float] | None = None
         self.is_pointer_visible: bool = False
@@ -90,17 +93,21 @@ class SlideCanvas(QWidget):
         self._cached_scaled_pixmap = scaled
 
     def _get_slide_rect(self) -> QRectF:
-        if not self.pixmap or self.pixmap.isNull():
+        if self.pixmap and not self.pixmap.isNull():
+            pw = self.pixmap.width()
+            ph = self.pixmap.height()
+        elif self.controller.is_sketchbook:
+            # スライド未ロード時でもスケッチブックなら 16:9 領域を使用
+            pw = 1920
+            ph = 1080
+        else:
             return QRectF()
-        
-        w = self.width()
-        h = self.height()
-        pw = self.pixmap.width()
-        ph = self.pixmap.height()
 
         if pw == 0 or ph == 0:
             return QRectF()
 
+        w = self.width()
+        h = self.height()
         scale = min(w / pw, h / ph)
         target_w = pw * scale
         target_h = ph * scale
@@ -240,6 +247,16 @@ class SlideCanvas(QWidget):
         self.update()
 
     def _on_color_changed(self, tool_name: str, color: str):
+        self.update()
+
+    def _on_blank_state_changed(self, enabled: bool):
+        self.update()
+
+    def _on_sketchbook_state_changed(self, enabled: bool):
+        self._update_scaled_pixmap()
+        self.update()
+
+    def _on_sketch_visibility_changed(self, visible: bool):
         self.update()
 
     # ==========================================
@@ -481,54 +498,68 @@ class SlideCanvas(QWidget):
         painter.fillRect(self.rect(), QColor("#121212"))
 
         rect = self._get_slide_rect()
-        if not self.pixmap or rect.isEmpty():
+        if rect.isEmpty():
             painter.setPen(QColor("#666666"))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "スライドが読み込まれていません")
             return
 
-        # スライド画像描画（面積平均縮小・Retina/HiDPI対応キャッシュを使用）
-        if self._cached_scaled_pixmap is not None:
-            painter.drawPixmap(rect.topLeft(), self._cached_scaled_pixmap)
+        if self.controller.is_sketchbook:
+            # スケッチブック（白紙キャンバス）描画
+            painter.fillRect(rect, QColor("#ffffff"))
+            painter.setPen(QPen(QColor("#555555"), 1.0))
+            painter.drawRect(rect)
+        elif self.pixmap and not self.pixmap.isNull():
+            # スライド画像描画（面積平均縮小・Retina/HiDPI対応キャッシュを使用）
+            if self._cached_scaled_pixmap is not None:
+                painter.drawPixmap(rect.topLeft(), self._cached_scaled_pixmap)
+            else:
+                painter.drawPixmap(rect, self.pixmap, QRectF(self.pixmap.rect()))
         else:
-            painter.drawPixmap(rect, self.pixmap, QRectF(self.pixmap.rect()))
+            painter.setPen(QColor("#666666"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "スライドが読み込まれていません")
+            return
 
-        # ストローク描画
-        strokes = self.controller.get_strokes_for_page(self.controller.current_page)
+        # ストローク・テキスト描画（スケッチが表示状態の時のみ）
         base_dim = min(rect.width(), rect.height())
+        if self.controller.is_sketch_visible:
+            strokes = self.controller.get_strokes_for_page(self.controller.current_page)
+            for stroke in strokes:
+                if not stroke.points:
+                    continue
+                color = QColor(stroke.color)
+                color.setAlphaF(stroke.opacity)
+                pen_w = max(1.5, base_dim * stroke.width_ratio)
+                pen = QPen(color, pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                painter.setPen(pen)
 
-        for stroke in strokes:
-            if not stroke.points:
-                continue
-            color = QColor(stroke.color)
-            color.setAlphaF(stroke.opacity)
-            pen_w = max(1.5, base_dim * stroke.width_ratio)
-            pen = QPen(color, pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(pen)
+                if len(stroke.points) == 1:
+                    painter.setBrush(QBrush(color))
+                    p0x = rect.left() + stroke.points[0][0] * rect.width()
+                    p0y = rect.top() + stroke.points[0][1] * rect.height()
+                    painter.drawEllipse(QPointF(p0x, p0y), pen_w / 2.0, pen_w / 2.0)
+                    continue
 
-            path = QPainterPath()
-            p0 = stroke.points[0]
-            path.moveTo(rect.left() + p0[0] * rect.width(), rect.top() + p0[1] * rect.height())
-            for pt in stroke.points[1:]:
-                path.lineTo(rect.left() + pt[0] * rect.width(), rect.top() + pt[1] * rect.height())
-            painter.drawPath(path)
+                path = create_smooth_path(stroke.points, rect.left(), rect.top(), rect.width(), rect.height())
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(path)
 
-        # テキスト描画
-        texts = self.controller.get_texts_for_page(self.controller.current_page)
-        for item in texts:
-            if not item.text:
-                continue
-            font_size = max(10, int(base_dim * (item.size * 0.0015)))
-            font = QFont(painter.font())
-            font.setPixelSize(font_size)
-            font.setBold(False)
-            font.setWeight(QFont.Weight.Normal)
-            painter.setFont(font)
-            painter.setPen(QPen(QColor(item.color)))
+            # テキスト描画
+            texts = self.controller.get_texts_for_page(self.controller.current_page)
+            for item in texts:
+                if not item.text:
+                    continue
+                font_size = max(10, int(base_dim * (item.size * 0.0015)))
+                font = QFont(painter.font())
+                font.setPixelSize(font_size)
+                font.setBold(False)
+                font.setWeight(QFont.Weight.Normal)
+                painter.setFont(font)
+                painter.setPen(QPen(QColor(item.color)))
 
-            metrics = painter.fontMetrics()
-            tx = rect.left() + item.norm_x * rect.width()
-            ty = rect.top() + item.norm_y * rect.height()
-            painter.drawText(int(tx + 6), int(ty + metrics.ascent() + 3), item.text)
+                metrics = painter.fontMetrics()
+                tx = rect.left() + item.norm_x * rect.width()
+                ty = rect.top() + item.norm_y * rect.height()
+                painter.drawText(int(tx + 6), int(ty + metrics.ascent() + 3), item.text)
 
         # 消しゴムカーソル（手元画面のみ、消去範囲を示す円）
         if self.controller.current_tool == "eraser" and self.hover_pos:
@@ -590,3 +621,40 @@ class SlideCanvas(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(gradient))
             painter.drawEllipse(QPointF(px, py), radius, radius)
+
+        # スケッチ非表示中バッジ（右上）
+        if not self.controller.is_sketch_visible and not self.controller.is_blank:
+            badge_rect = QRectF(rect.right() - 155, rect.top() + 10, 145, 26)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(40, 40, 40, 200)))
+            painter.drawRoundedRect(badge_rect, 6, 6)
+            painter.setPen(QColor("#ffb74d"))
+            b_font = QFont(painter.font())
+            b_font.setPixelSize(12)
+            b_font.setBold(True)
+            painter.setFont(b_font)
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, "👁️‍🗨️ スケッチ非表示中")
+
+        # スケッチブック表示中バッジ（右上）
+        if self.controller.is_sketchbook and not self.controller.is_blank:
+            badge_y = rect.top() + (42 if not self.controller.is_sketch_visible else 10)
+            badge_rect = QRectF(rect.right() - 145, badge_y, 135, 26)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(30, 30, 30, 190)))
+            painter.drawRoundedRect(badge_rect, 6, 6)
+            painter.setPen(QColor("#4fc3f7"))
+            b_font = QFont(painter.font())
+            b_font.setPixelSize(12)
+            b_font.setBold(True)
+            painter.setFont(b_font)
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, "📋 スケッチブック")
+
+        # ブランクスクリーン表示（画面暗転）
+        if self.controller.is_blank:
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 230))
+            painter.setPen(QColor(255, 255, 255))
+            b_font = QFont(painter.font())
+            b_font.setPixelSize(22)
+            b_font.setBold(True)
+            painter.setFont(b_font)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "⬛ 暗転中 (Bキーで解除)")
