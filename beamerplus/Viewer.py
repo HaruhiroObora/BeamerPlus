@@ -31,6 +31,7 @@ class Viewer(QMainWindow):
         self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self.graphics_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.graphics_view.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         self.graphics_view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         self.scene = QGraphicsScene(self)
@@ -38,8 +39,9 @@ class Viewer(QMainWindow):
 
         self.page_pixmap: QPixmap | None = None
 
-        # スライド画像アイテム（一度作成して setPixmap で更新）
+        # スライド画像アイテム（高品質バイリニア補間 SmoothTransformation を有効化）
         self.pixmap_item: QGraphicsPixmapItem = self.scene.addPixmap(QPixmap())
+        self.pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self.pixmap_item.setZValue(0)
 
         # ストローク管理

@@ -1,5 +1,5 @@
 import math
-from PySide6.QtCore import Qt, QPointF, QRectF, QEvent
+from PySide6.QtCore import Qt, QPointF, QRectF, QEvent, QSize
 from PySide6.QtWidgets import QWidget, QLineEdit
 from PySide6.QtGui import (
     QPixmap, QPainter, QPaintEvent, QMouseEvent, QTabletEvent,
@@ -50,11 +50,44 @@ class SlideCanvas(QWidget):
         self.text_input.installEventFilter(self)
         self.text_input_norm_pos: tuple[float, float] | None = None
 
+        # 高品質縮小キャッシュ（面積平均 SmoothTransformation & Retina/HiDPI 対応）
+        self._cached_scaled_pixmap: QPixmap | None = None
+
     def set_pixmap(self, pixmap: QPixmap | None):
         if self.text_input.isVisible():
             self._commit_text()
         self.pixmap = pixmap
+        self._update_scaled_pixmap()
         self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_scaled_pixmap()
+
+    def _update_scaled_pixmap(self):
+        """現在の表示サイズと画面の物理ピクセル比（DPR）に合わせて高品質に縮小したキャッシュを生成"""
+        if not self.pixmap or self.pixmap.isNull():
+            self._cached_scaled_pixmap = None
+            return
+
+        rect = self._get_slide_rect()
+        if rect.isEmpty():
+            self._cached_scaled_pixmap = None
+            return
+
+        # Retina / HiDPI (devicePixelRatio) を考慮した物理ピクセル解像度
+        dpr = self.devicePixelRatioF()
+        target_w = max(1, int(round(rect.width() * dpr)))
+        target_h = max(1, int(round(rect.height() * dpr)))
+
+        # 面積平均アルゴリズム（SmoothTransformation）で高品質に縮小
+        scaled = self.pixmap.scaled(
+            QSize(target_w, target_h),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        scaled.setDevicePixelRatio(dpr)
+        self._cached_scaled_pixmap = scaled
 
     def _get_slide_rect(self) -> QRectF:
         if not self.pixmap or self.pixmap.isNull():
@@ -453,8 +486,11 @@ class SlideCanvas(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "スライドが読み込まれていません")
             return
 
-        # スライド画像描画
-        painter.drawPixmap(rect.toRect(), self.pixmap)
+        # スライド画像描画（面積平均縮小・Retina/HiDPI対応キャッシュを使用）
+        if self._cached_scaled_pixmap is not None:
+            painter.drawPixmap(rect.topLeft(), self._cached_scaled_pixmap)
+        else:
+            painter.drawPixmap(rect, self.pixmap, QRectF(self.pixmap.rect()))
 
         # ストローク描画
         strokes = self.controller.get_strokes_for_page(self.controller.current_page)
