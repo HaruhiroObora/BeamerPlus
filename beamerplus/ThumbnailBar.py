@@ -104,7 +104,9 @@ class ThumbnailBar(QWidget):
                 continue
             label_text = f"{i + 1}"
             if i < len(reader.page_labels) and reader.page_labels[i]:
-                label_text = f"{i + 1} ({reader.page_labels[i]})"
+                lbl = reader.page_labels[i].strip()
+                if lbl and lbl != str(i + 1):
+                    label_text = f"{i + 1} ({lbl})"
             item = ThumbnailItem(i, label_text, pix)
             item.clicked.connect(self._on_item_clicked)
             self.container_layout.addWidget(item)

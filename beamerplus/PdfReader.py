@@ -1,5 +1,6 @@
 import os.path
 import json
+import re
 
 import pymupdf
 
@@ -8,6 +9,50 @@ from PySide6.QtGui import QImage, QPixmap
 
 CROP_THRESHOLD = 2.5
 DEFAULT_DPI = 400  # デフォルト解像度 (4Kディスプレイでも一切ボケない超高精細DPI)
+
+
+def _decode_page_label(label: str) -> str:
+    """PDFに埋め込まれたページラベルの生文字列（UTF-16BE/UTF-8の16進数表現等）を人間が読める文字列にデコード"""
+    if not label:
+        return ""
+    label = label.strip()
+
+    # 1. <HEX> パターン（例: <FEFF0031> や <E382B9...>）を置換・デコード
+    def _decode_hex_match(m: re.Match) -> str:
+        h = m.group(1)
+        if len(h) % 2 == 0:
+            try:
+                b = bytes.fromhex(h)
+                if b.startswith(b"\xfe\xff"):
+                    return b.decode("utf-16-be").replace("\ufeff", "")
+                if b.startswith(b"\xff\xfe"):
+                    return b.decode("utf-16-le").replace("\ufeff", "")
+                u8 = b.decode("utf-8")
+                if u8.isprintable():
+                    return u8
+            except Exception:
+                pass
+        return m.group(0)
+
+    res = re.sub(r"<([0-9a-fA-F]+)>", _decode_hex_match, label)
+    if res != label:
+        return res.strip()
+
+    # 2. 全体が FEFF... / FFFE... などの生16進数文字列（例: "FEFF0031"）の場合
+    if len(label) >= 4 and len(label) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]+", label):
+        try:
+            b = bytes.fromhex(label)
+            if b.startswith(b"\xfe\xff"):
+                return b.decode("utf-16-be").replace("\ufeff", "").strip()
+            if b.startswith(b"\xff\xfe"):
+                return b.decode("utf-16-le").replace("\ufeff", "").strip()
+            u8 = b.decode("utf-8")
+            if u8.isprintable():
+                return u8.strip()
+        except Exception:
+            pass
+
+    return label
 
 
 class PdfReader:
@@ -25,7 +70,7 @@ class PdfReader:
         except Exception as e:
             raise e
         
-        self.page_labels = [i.get_label() for i in self.document]
+        self.page_labels = [_decode_page_label(page.get_label()) for page in self.document]
         self._image_cache: dict[tuple[int, int, bool], QPixmap] = {}
 
     @property
