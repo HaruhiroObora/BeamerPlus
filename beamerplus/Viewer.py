@@ -1,4 +1,5 @@
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+import time
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QTimer
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QGraphicsPathItem, QGraphicsEllipseItem, QGraphicsSimpleTextItem
@@ -14,6 +15,16 @@ from beamerplus.DrawingModel import PresentationController, Stroke, TextItem, cr
 POINTER_RADIUS_RATIO = 0.018
 
 
+class ViewerGraphicsView(QGraphicsView):
+    def __init__(self, viewer: "Viewer", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.viewer = viewer
+
+    def drawForeground(self, painter: QPainter, rect: QRectF):
+        super().drawForeground(painter, rect)
+        self.viewer.draw_trail(painter, rect)
+
+
 class Viewer(QMainWindow):
     blank_state_changed = Signal(bool)
 
@@ -23,7 +34,7 @@ class Viewer(QMainWindow):
         self.setWindowTitle("BeamerPlus プロジェクタ")
         self.controller = controller
 
-        self.graphics_view = QGraphicsView()
+        self.graphics_view = ViewerGraphicsView(self)
         self.setCentralWidget(self.graphics_view)
         self.graphics_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.graphics_view.setStyleSheet("background-color: black; border: none;")
@@ -49,6 +60,12 @@ class Viewer(QMainWindow):
         self.active_path_item: QGraphicsPathItem | None = None
         self.active_path: QPainterPath | None = None
         self.active_points: list[tuple[float, float]] = []
+
+        # レーザーポインタ一時軌跡（トレイル）管理
+        self.pointer_trail: list[tuple[float, float, float]] = []  # (norm_x, norm_y, timestamp)
+        self.trail_timer = QTimer(self)
+        self.trail_timer.setInterval(30)
+        self.trail_timer.timeout.connect(self._on_trail_timer_tick)
 
         # テキスト管理
         self.text_items: list[QGraphicsSimpleTextItem] = []
@@ -220,7 +237,7 @@ class Viewer(QMainWindow):
         self.scene.addItem(text_item)
         self.text_items.append(text_item)
 
-    def on_pointer_updated(self, norm_x: float, norm_y: float, visible: bool):
+    def on_pointer_updated(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
         if not self.pointer_item:
             return
         if not visible or self.is_blank or self.scene.sceneRect().isEmpty():
@@ -231,6 +248,63 @@ class Viewer(QMainWindow):
         h = self.scene.sceneRect().height()
         self.pointer_item.setPos(norm_x * w, norm_y * h)
         self.pointer_item.setVisible(True)
+
+        if is_down:
+            now = time.time()
+            self.pointer_trail.append((norm_x, norm_y, now))
+            if not self.trail_timer.isActive():
+                self.trail_timer.start()
+
+    def _on_trail_timer_tick(self):
+        now = time.time()
+        lifetime = 1.2
+        self.pointer_trail = [p for p in self.pointer_trail if now - p[2] < lifetime]
+        if not self.pointer_trail:
+            self.trail_timer.stop()
+        self.graphics_view.viewport().update()
+
+    def draw_trail(self, painter: QPainter, rect: QRectF):
+        if self.is_blank or self.scene.sceneRect().isEmpty() or not self.pointer_trail:
+            return
+
+        now = time.time()
+        lifetime = 1.2
+        trail = [p for p in self.pointer_trail if now - p[2] < lifetime]
+        if len(trail) < 2:
+            return
+
+        sw = self.scene.sceneRect().width()
+        sh = self.scene.sceneRect().height()
+        base_dim = min(sw, sh)
+        base_w = max(4.0, base_dim * 0.006)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        for i in range(len(trail) - 1):
+            p1 = trail[i]
+            p2 = trail[i + 1]
+            avg_age = now - (p1[2] + p2[2]) * 0.5
+            progress = max(0.0, min(1.0, avg_age / lifetime))
+            alpha = int(240 * (1.0 - progress))
+            if alpha <= 0:
+                continue
+
+            x1 = p1[0] * sw
+            y1 = p1[1] * sh
+            x2 = p2[0] * sw
+            y2 = p2[1] * sh
+
+            pen_w = max(1.5, base_w * (1.0 - progress * 0.3))
+            glow_pen = QPen(QColor(255, 30, 30, int(alpha * 0.45)), pen_w * 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(glow_pen)
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+            core_pen = QPen(QColor(255, 90, 90, alpha), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(core_pen)
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+        painter.restore()
 
     def on_stroke_started(self, page_index: int, stroke: Stroke):
         if not self._is_target_page(page_index) or self.scene.sceneRect().isEmpty():
@@ -337,6 +411,8 @@ class Viewer(QMainWindow):
             self.blank_overlay.raise_()
             if self.pointer_item:
                 self.pointer_item.setVisible(False)
+            self.pointer_trail.clear()
+            self.trail_timer.stop()
         else:
             self.blank_overlay.hide()
         self.blank_state_changed.emit(self.is_blank)

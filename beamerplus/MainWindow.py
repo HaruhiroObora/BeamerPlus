@@ -749,8 +749,8 @@ class MainWindow(QMainWindow):
         finally:
             self._is_handling_web_stroke = False
 
-    def _on_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool):
-        self.controller.update_pointer(norm_x, norm_y, visible)
+    def _on_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
+        self.controller.update_pointer(norm_x, norm_y, visible, is_down=is_down)
 
     def _on_web_erase_requested(self, data: dict):
         norm_x = float(data.get("normX", 0.0))
@@ -939,13 +939,14 @@ class MainWindow(QMainWindow):
                 "visible": visible
             })
 
-    def _sync_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool):
+    def _sync_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
         if hasattr(self, "web_server") and self.web_server:
             self.web_server.broadcast({
                 "type": "pointer_updated",
                 "normX": norm_x,
                 "normY": norm_y,
-                "visible": visible
+                "visible": visible,
+                "isDown": is_down
             })
 
     def show_ipad_dialog(self):

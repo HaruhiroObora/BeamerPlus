@@ -1,5 +1,6 @@
 import math
-from PySide6.QtCore import Qt, QPointF, QRectF, QEvent, QSize
+import time
+from PySide6.QtCore import Qt, QPointF, QRectF, QEvent, QSize, QTimer
 from PySide6.QtWidgets import QWidget, QLineEdit
 from PySide6.QtGui import (
     QPixmap, QPainter, QPaintEvent, QMouseEvent, QTabletEvent,
@@ -41,6 +42,11 @@ class SlideCanvas(QWidget):
 
         self.pointer_pos: tuple[float, float] | None = None
         self.is_pointer_visible: bool = False
+        self.is_pointer_down: bool = False
+        self.pointer_trail: list[tuple[float, float, float]] = []  # (norm_x, norm_y, timestamp)
+        self.trail_timer = QTimer(self)
+        self.trail_timer.setInterval(30)
+        self.trail_timer.timeout.connect(self._on_trail_timer_tick)
 
         # Wacom / タブレット用状態
         self.is_tablet_drawing: bool = False
@@ -161,10 +167,26 @@ class SlideCanvas(QWidget):
 
         return end_norm
 
-    def _on_pointer_updated(self, nx: float, ny: float, visible: bool):
+    def _on_pointer_updated(self, nx: float, ny: float, visible: bool, is_down: bool = False):
         self.is_pointer_visible = visible
+        self.is_pointer_down = is_down
         if visible:
             self.pointer_pos = (nx, ny)
+            if is_down:
+                now = time.time()
+                self.pointer_trail.append((nx, ny, now))
+                if not self.trail_timer.isActive():
+                    self.trail_timer.start()
+        else:
+            self.pointer_pos = None
+        self.update()
+
+    def _on_trail_timer_tick(self):
+        now = time.time()
+        lifetime = 1.2
+        self.pointer_trail = [p for p in self.pointer_trail if now - p[2] < lifetime]
+        if not self.pointer_trail:
+            self.trail_timer.stop()
         self.update()
 
     def _on_stroke_started(self, page_index: int, stroke: Stroke):
@@ -284,12 +306,13 @@ class SlideCanvas(QWidget):
             event.accept()
             return
 
-        # 2. レーザーポインタモード（ホバーでもなぞってもポインタとして機能）
+        # 2. レーザーポインタモード（ホバー時はポインタのみ、接地ドラッグ時は一時的な線を描画）
         if tool == "pointer":
             if norm is not None:
-                self.controller.update_pointer(norm[0], norm[1], True)
+                is_down = pressure > 0.05 or bool(event.buttons() & Qt.MouseButton.LeftButton)
+                self.controller.update_pointer(norm[0], norm[1], True, is_down=is_down)
             else:
-                self.controller.update_pointer(0, 0, False)
+                self.controller.update_pointer(0, 0, False, is_down=False)
             event.accept()
             return
 
@@ -382,7 +405,9 @@ class SlideCanvas(QWidget):
             elif tool == "hand":
                 self.controller.next_page()
             elif tool == "pointer":
-                self.controller.update_pointer(norm[0], norm[1], True)
+                self.is_pointer_down = True
+                if norm:
+                    self.controller.update_pointer(norm[0], norm[1], True, is_down=True)
         elif event.button() == Qt.MouseButton.RightButton:
             self.controller.prev_page()
 
@@ -437,7 +462,8 @@ class SlideCanvas(QWidget):
 
         if norm:
             if tool == "pointer":
-                self.controller.update_pointer(norm[0], norm[1], True)
+                is_down = bool(event.buttons() & Qt.MouseButton.LeftButton) or self.is_pointer_down
+                self.controller.update_pointer(norm[0], norm[1], True, is_down=is_down)
                 self.setCursor(Qt.CursorShape.ArrowCursor)
             elif tool == "text":
                 self.setCursor(Qt.CursorShape.IBeamCursor)
@@ -467,7 +493,8 @@ class SlideCanvas(QWidget):
                 self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             if tool == "pointer":
-                self.controller.update_pointer(0, 0, False)
+                self.is_pointer_down = False
+                self.controller.update_pointer(0, 0, False, is_down=False)
             self.setCursor(Qt.CursorShape.ArrowCursor)
             self.hover_pos = None
             self.update()
@@ -479,11 +506,17 @@ class SlideCanvas(QWidget):
             tool = self.controller.current_tool
             if tool in ("pen", "highlighter"):
                 self.controller.end_stroke()
+            elif tool == "pointer":
+                self.is_pointer_down = False
+                norm = self._pos_to_normalized(event.position())
+                if norm:
+                    self.controller.update_pointer(norm[0], norm[1], True, is_down=False)
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event):
         if self.controller.current_tool == "pointer":
-            self.controller.update_pointer(0, 0, False)
+            self.is_pointer_down = False
+            self.controller.update_pointer(0, 0, False, is_down=False)
         self.hover_pos = None
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
@@ -604,6 +637,43 @@ class SlideCanvas(QWidget):
             painter.setPen(QPen(border_color, 1.2, Qt.PenStyle.SolidLine))
             painter.setBrush(QBrush(fill_color))
             painter.drawEllipse(QPointF(hx, hy), curr_r, curr_r)
+
+        # レーザーポインタの一時的な線（軌跡）描画
+        now = time.time()
+        lifetime = 1.2
+        if self.pointer_trail:
+            trail = [p for p in self.pointer_trail if now - p[2] < lifetime]
+            if len(trail) >= 2:
+                painter.save()
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                base_w = max(4.0, base_dim * 0.006)
+
+                for i in range(len(trail) - 1):
+                    p1 = trail[i]
+                    p2 = trail[i + 1]
+                    avg_age = now - (p1[2] + p2[2]) * 0.5
+                    progress = max(0.0, min(1.0, avg_age / lifetime))
+                    alpha = int(240 * (1.0 - progress))
+                    if alpha <= 0:
+                        continue
+
+                    x1 = rect.left() + p1[0] * rect.width()
+                    y1 = rect.top() + p1[1] * rect.height()
+                    x2 = rect.left() + p2[0] * rect.width()
+                    y2 = rect.top() + p2[1] * rect.height()
+
+                    pen_w = max(1.5, base_w * (1.0 - progress * 0.3))
+                    # 外側の光彩（グロー）
+                    glow_pen = QPen(QColor(255, 30, 30, int(alpha * 0.45)), pen_w * 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                    painter.setPen(glow_pen)
+                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+                    # 中心の明るい線
+                    core_pen = QPen(QColor(255, 90, 90, alpha), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                    painter.setPen(core_pen)
+                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+                painter.restore()
 
         # レーザーポインタ描画
         if self.is_pointer_visible and self.pointer_pos:

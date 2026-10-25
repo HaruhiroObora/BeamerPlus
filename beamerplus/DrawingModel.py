@@ -189,7 +189,7 @@ class PresentationController(QObject):
     page_changed = Signal(int)
 
     # ポインタ同期 (0.0 ~ 1.0)
-    pointer_updated = Signal(float, float, bool)  # norm_x, norm_y, visible
+    pointer_updated = Signal(float, float, bool, bool)  # norm_x, norm_y, visible, is_down
 
     # 描画ストローク同期
     stroke_started = Signal(int, Stroke)                  # page_index, new_stroke
@@ -274,7 +274,7 @@ class PresentationController(QObject):
         if self.total_pages > 0 and 0 <= index < self.total_pages:
             if self.current_page != index:
                 self.current_page = index
-                self.pointer_updated.emit(0.0, 0.0, False)
+                self.pointer_updated.emit(0.0, 0.0, False, False)
                 self.page_changed.emit(index)
 
     def next_page(self):
@@ -293,7 +293,7 @@ class PresentationController(QObject):
             self.current_tool = tool_name
             self.tool_changed.emit(tool_name)
             if tool_name != "pointer":
-                self.pointer_updated.emit(0.0, 0.0, False)
+                self.pointer_updated.emit(0.0, 0.0, False, False)
 
     def set_line_mode(self, enabled: bool):
         if self.is_line_mode != enabled:
@@ -374,8 +374,8 @@ class PresentationController(QObject):
             self.pen_color = hex_color
         self.color_changed.emit(tool_name, hex_color)
 
-    def update_pointer(self, norm_x: float, norm_y: float, visible: bool):
-        self.pointer_updated.emit(norm_x, norm_y, visible)
+    def update_pointer(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
+        self.pointer_updated.emit(norm_x, norm_y, visible, is_down)
 
     def begin_stroke(self, norm_x: float, norm_y: float, pressure: float = 1.0):
         if self.current_tool not in ("pen", "highlighter"):

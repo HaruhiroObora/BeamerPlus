@@ -117,7 +117,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       height: 100%;
       display: block;
     }
-    #committed-canvas {
+    #committed-canvas,
+    #pointer-canvas {
       pointer-events: none;
     }
     #active-canvas {
@@ -515,6 +516,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <img id="slide-img" alt="Slide" src="">
       <canvas id="committed-canvas"></canvas>
       <canvas id="active-canvas" inputmode="none"></canvas>
+      <canvas id="pointer-canvas"></canvas>
       <div id="laser-dot"></div>
     </div>
   </div>
@@ -586,6 +588,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     const committedCtx = committedCanvas.getContext('2d');
     const activeCanvas = document.getElementById('active-canvas');
     const activeCtx = activeCanvas.getContext('2d');
+    const pointerCanvas = document.getElementById('pointer-canvas');
+    const pointerCtx = pointerCanvas.getContext('2d');
     const laserDot = document.getElementById('laser-dot');
 
     const statusDot = document.getElementById('status-dot');
@@ -1047,7 +1051,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           remoteStroke = null;
         }
       } else if (msg.type === 'pointer_updated') {
-        updateLaserDot(msg.normX, msg.normY, msg.visible);
+        updateLaserDot(msg.normX, msg.normY, msg.visible, !!msg.isDown);
       }
     }
 
@@ -1082,11 +1086,11 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       // Canvas のピクセル解像度を Retina (devicePixelRatio) に合わせる
       const dpr = window.devicePixelRatio || 2;
-      [committedCanvas, activeCanvas].forEach(c => {
+      [committedCanvas, activeCanvas, pointerCanvas].forEach(c => {
         c.width = targetW * dpr;
         c.height = targetH * dpr;
       });
-      [committedCtx, activeCtx].forEach(ctx => {
+      [committedCtx, activeCtx, pointerCtx].forEach(ctx => {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.scale(dpr, dpr);
       });
@@ -1101,6 +1105,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     function clearAllCanvases() {
       committedCtx.clearRect(0, 0, committedCanvas.width, committedCanvas.height);
       activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+      pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
     }
 
     function drawStroke(targetCtx, stroke) {
@@ -1252,8 +1257,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       e.preventDefault(); // スクリブルやスクロールを防止
 
       if (currentTool === 'pointer') {
-        updateLaserDot(pos.normX, pos.normY, true);
-        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true });
+        updateLaserDot(pos.normX, pos.normY, true, true);
+        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: true });
         return;
       }
 
@@ -1303,8 +1308,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (!pos.isStylus && penOnly) return;
 
       if (currentTool === 'pointer') {
-        updateLaserDot(pos.normX, pos.normY, true);
-        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true });
+        updateLaserDot(pos.normX, pos.normY, true, true);
+        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: true });
         return;
       }
 
@@ -1387,8 +1392,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       isTrackingSwipe = false;
 
       if (currentTool === 'pointer') {
-        updateLaserDot(0, 0, false);
-        sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false });
+        updateLaserDot(0, 0, false, false);
+        sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
         return;
       }
 
@@ -1472,11 +1477,76 @@ HTML_CONTENT = """<!DOCTYPE html>
     uiBar.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
     uiBar.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
 
-    function updateLaserDot(normX, normY, visible) {
+    // ポインタの一時的な軌跡（トレイル）管理
+    let pointerTrail = [];
+    let trailAnimId = null;
+
+    function addPointerTrailPoint(nx, ny) {
+      pointerTrail.push({ x: nx, y: ny, t: Date.now() });
+      if (!trailAnimId) {
+        trailAnimId = requestAnimationFrame(renderPointerTrail);
+      }
+    }
+
+    function renderPointerTrail() {
+      const now = Date.now();
+      const lifetime = 1200; // 1.2秒
+      pointerTrail = pointerTrail.filter(p => now - p.t < lifetime);
+
+      pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
+
+      if (pointerTrail.length >= 2) {
+        const w = slideWrapper.clientWidth;
+        const h = slideWrapper.clientHeight;
+        const baseDim = Math.min(w, h);
+        const baseW = Math.max(4, baseDim * 0.006);
+
+        pointerCtx.lineCap = 'round';
+        pointerCtx.lineJoin = 'round';
+
+        for (let i = 0; i < pointerTrail.length - 1; i++) {
+          const p1 = pointerTrail[i];
+          const p2 = pointerTrail[i + 1];
+          const avgAge = now - (p1.t + p2.t) * 0.5;
+          const progress = Math.max(0, Math.min(1, avgAge / lifetime));
+          const alpha = 1.0 - progress;
+          if (alpha <= 0) continue;
+
+          const penW = Math.max(1.5, baseW * (1.0 - progress * 0.3));
+
+          // 外側の光彩（グロー）
+          pointerCtx.strokeStyle = `rgba(255, 30, 30, ${alpha * 0.45})`;
+          pointerCtx.lineWidth = penW * 2.4;
+          pointerCtx.beginPath();
+          pointerCtx.moveTo(p1.x * w, p1.y * h);
+          pointerCtx.lineTo(p2.x * w, p2.y * h);
+          pointerCtx.stroke();
+
+          // 中心の明るい線
+          pointerCtx.strokeStyle = `rgba(255, 90, 90, ${alpha})`;
+          pointerCtx.lineWidth = penW;
+          pointerCtx.beginPath();
+          pointerCtx.moveTo(p1.x * w, p1.y * h);
+          pointerCtx.lineTo(p2.x * w, p2.y * h);
+          pointerCtx.stroke();
+        }
+      }
+
+      if (pointerTrail.length > 0) {
+        trailAnimId = requestAnimationFrame(renderPointerTrail);
+      } else {
+        trailAnimId = null;
+      }
+    }
+
+    function updateLaserDot(normX, normY, visible, isDown) {
       if (visible) {
         laserDot.style.display = 'block';
         laserDot.style.left = (normX * 100) + '%';
         laserDot.style.top = (normY * 100) + '%';
+        if (isDown) {
+          addPointerTrailPoint(normX, normY);
+        }
       } else {
         laserDot.style.display = 'none';
       }
@@ -1504,14 +1574,14 @@ HTML_CONTENT = """<!DOCTYPE html>
         // 使用しているツールのボタンを押したら選択解除（未選択状態にする）
         if (currentTool === 'pointer') {
           if (laserDot) laserDot.style.display = 'none';
-          sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false });
+          sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
         }
         currentTool = null;
         isLineMode = false;
       } else {
         if (currentTool === 'pointer' && toolName !== 'pointer') {
           if (laserDot) laserDot.style.display = 'none';
-          sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false });
+          sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
         }
         currentTool = toolName;
         if (toolName === 'eraser' || toolName === 'pointer') {
@@ -1570,7 +1640,7 @@ class WebBridge(QObject):
     stroke_started = Signal(dict)
     stroke_moved = Signal(dict)
     stroke_ended = Signal()
-    pointer_updated = Signal(float, float, bool)
+    pointer_updated = Signal(float, float, bool, bool)
     erase_requested = Signal(dict)
     eraser_mode_command = Signal(str)  # "partial" または "stroke"
     line_mode_command = Signal(bool)    # 直線モード ON/OFF
@@ -1805,7 +1875,8 @@ class WebServer:
             self.bridge.pointer_updated.emit(
                 float(data.get("normX", 0.0)),
                 float(data.get("normY", 0.0)),
-                bool(data.get("visible", False))
+                bool(data.get("visible", False)),
+                bool(data.get("isDown", False))
             )
         elif msg_type == "erase":
             self.bridge.erase_requested.emit(data)
