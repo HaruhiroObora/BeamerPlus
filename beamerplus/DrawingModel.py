@@ -219,6 +219,10 @@ class PresentationController(QObject):
         self.highlighter_color: str = "#ffeb3b"    # 蛍光ペンの色（デフォルト蛍光イエロー）
         self.text_color: str = "#e53935"           # テキストの色（デフォルト赤）
 
+        # 不透明度設定 (0.0 = 完全透明, 1.0 = 完全不透明)
+        self.pen_opacity: float = 0.85
+        self.highlighter_opacity: float = 0.28     # 蛍光ペンの不透明度（透明度72%: 文字がクリアに透けて見える設定）
+
     def set_total_pages(self, total: int):
         self.total_pages = total
 
@@ -314,10 +318,10 @@ class PresentationController(QObject):
 
         if self.current_tool == "highlighter":
             color = self.highlighter_color
-            opacity = 0.45
+            opacity = self.highlighter_opacity
         else:
             color = self.pen_color
-            opacity = 0.85
+            opacity = self.pen_opacity
 
         stroke = Stroke(color=color, width_ratio=width_ratio, opacity=opacity, points=[(norm_x, norm_y, pressure)])
         self.current_stroke = stroke

@@ -561,9 +561,9 @@ class SlideCanvas(QWidget):
             fill_color = QColor(tool_color)
             if self.controller.current_tool == "highlighter":
                 # 蛍光ペン: 文字を隠さない適度な透明度＋輪郭線
-                fill_color.setAlphaF(0.65)
+                fill_color.setAlphaF(0.40)
                 border_color = QColor(tool_color).darker(120)
-                border_color.setAlphaF(0.9)
+                border_color.setAlphaF(0.85)
             else:
                 # 通常ペン: ペンの色でしっかり塗りつぶし
                 fill_color.setAlphaF(0.9)
