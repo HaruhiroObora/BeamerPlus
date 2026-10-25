@@ -1,10 +1,27 @@
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QEvent
 from PySide6.QtWidgets import (
     QWidget, QScrollArea, QHBoxLayout, QVBoxLayout, QLabel, QFrame
 )
-from PySide6.QtGui import QPixmap, QMouseEvent
+from PySide6.QtGui import QPixmap, QMouseEvent, QWheelEvent
 
 from beamerplus.PdfReader import PdfReader
+
+
+class ThumbnailScrollArea(QScrollArea):
+    """水平方向に配置されたサムネイル一覧用のスクロールエリア。
+    縦方向のマウスホイール回転またはトラックパッドの水平スクロールを検知し、
+    水平スクロールバーをスムーズに操作できるようにする。"""
+
+    def wheelEvent(self, event: QWheelEvent):
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta != 0:
+            sb = self.horizontalScrollBar()
+            # 1ノッチ(120)あたり約1枚分(約150px)スムーズにスクロール
+            step = int(delta * 1.25)
+            sb.setValue(sb.value() - step)
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
 
 class ThumbnailItem(QFrame):
@@ -73,7 +90,7 @@ class ThumbnailBar(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        self.scroll_area = QScrollArea()
+        self.scroll_area = ThumbnailScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -95,6 +112,20 @@ class ThumbnailBar(QWidget):
         self.scroll_area.setWidget(self.container)
         main_layout.addWidget(self.scroll_area)
 
+        # スクロールエリアとコンテナにイベントフィルタを設定（ホイール操作を確実に補足）
+        self.scroll_area.viewport().installEventFilter(self)
+        self.container.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Wheel:
+            self.scroll_area.wheelEvent(event)
+            return True
+        return super().eventFilter(watched, event)
+
+    def wheelEvent(self, event: QWheelEvent):
+        # バー本体領域でのホイール操作もスクロールエリアに転送
+        self.scroll_area.wheelEvent(event)
+
     def load_pdf(self, reader: PdfReader):
         self.clear()
         target_size = QSize(140, 95)
@@ -109,6 +140,12 @@ class ThumbnailBar(QWidget):
                     label_text = f"{i + 1} ({lbl})"
             item = ThumbnailItem(i, label_text, pix)
             item.clicked.connect(self._on_item_clicked)
+
+            # サムネイルアイテム及びその内部ラベル上でもホイールイベントを確実に拾う
+            item.installEventFilter(self)
+            item.image_label.installEventFilter(self)
+            item.caption_label.installEventFilter(self)
+
             self.container_layout.addWidget(item)
             self.items.append(item)
 
