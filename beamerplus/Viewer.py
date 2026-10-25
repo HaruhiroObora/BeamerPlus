@@ -62,9 +62,11 @@ class Viewer(QMainWindow):
         self.active_points: list[tuple[float, float]] = []
 
         # レーザーポインタ一時軌跡（トレイル）管理
-        self.pointer_trail: list[tuple[float, float, float]] = []  # (norm_x, norm_y, timestamp)
+        self.current_trail: list[tuple[float, float, float]] = []  # 現在ドラッグ中の軌跡 (norm_x, norm_y, timestamp)
+        self.fading_trails: list[tuple[list[tuple[float, float, float]], float]] = []  # 離されたフェードアウト中ストローク [(points, release_time), ...]
+        self.is_pointer_down: bool = False
         self.trail_timer = QTimer(self)
-        self.trail_timer.setInterval(30)
+        self.trail_timer.setInterval(20)
         self.trail_timer.timeout.connect(self._on_trail_timer_tick)
 
         # テキスト管理
@@ -240,8 +242,14 @@ class Viewer(QMainWindow):
     def on_pointer_updated(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
         if not self.pointer_item:
             return
+        now = time.time()
         if not visible or self.is_blank or self.scene.sceneRect().isEmpty():
             self.pointer_item.setVisible(False)
+            if self.is_pointer_down:
+                self.is_pointer_down = False
+                if len(self.current_trail) >= 2:
+                    self.fading_trails.append((list(self.current_trail), now))
+                self.current_trail = []
             return
 
         w = self.scene.sceneRect().width()
@@ -249,28 +257,68 @@ class Viewer(QMainWindow):
         self.pointer_item.setPos(norm_x * w, norm_y * h)
         self.pointer_item.setVisible(True)
 
+        prev_down = self.is_pointer_down
+        self.is_pointer_down = is_down
+
         if is_down:
-            now = time.time()
-            self.pointer_trail.append((norm_x, norm_y, now))
+            if not prev_down:
+                # 新しいストロークの開始（前のストロークとは完全に分離）
+                if len(self.current_trail) >= 2:
+                    self.fading_trails.append((list(self.current_trail), now))
+                self.current_trail = [(norm_x, norm_y, now)]
+            else:
+                self.current_trail.append((norm_x, norm_y, now))
             if not self.trail_timer.isActive():
                 self.trail_timer.start()
+        elif prev_down and not is_down:
+            # 離した瞬間: 現在のストロークをフェードアウト一覧へ移行
+            if len(self.current_trail) >= 2:
+                self.fading_trails.append((list(self.current_trail), now))
+            self.current_trail = []
 
     def _on_trail_timer_tick(self):
         now = time.time()
-        lifetime = 1.2
-        self.pointer_trail = [p for p in self.pointer_trail if now - p[2] < lifetime]
-        if not self.pointer_trail:
+        lifetime = 0.45      # ドラッグ中の軌跡の寿命（0.45秒）
+        fade_duration = 0.25 # 離した後のフェードアウト時間（0.25秒）
+
+        # ドラッグ中ストロークの古い点を削除
+        if self.current_trail:
+            self.current_trail = [p for p in self.current_trail if now - p[2] < lifetime]
+
+        # 離されてから 0.25秒 経過したフェードアウト中ストロークを削除
+        self.fading_trails = [
+            (pts, rel_t) for pts, rel_t in self.fading_trails
+            if now - rel_t < fade_duration
+        ]
+
+        if not self.current_trail and not self.fading_trails:
             self.trail_timer.stop()
         self.graphics_view.viewport().update()
 
     def draw_trail(self, painter: QPainter, rect: QRectF):
-        if self.is_blank or self.scene.sceneRect().isEmpty() or not self.pointer_trail:
+        if self.is_blank or self.scene.sceneRect().isEmpty():
             return
 
         now = time.time()
-        lifetime = 1.2
-        trail = [p for p in self.pointer_trail if now - p[2] < lifetime]
-        if len(trail) < 2:
+        lifetime = 0.45
+        fade_duration = 0.25
+
+        trails_to_draw: list[tuple[list[tuple[float, float, float]], float]] = []
+
+        # 1. 離されたフェードアウト中ストローク
+        for stroke_pts, rel_t in self.fading_trails:
+            elapsed = now - rel_t
+            f_alpha = max(0.0, min(1.0, 1.0 - elapsed / fade_duration))
+            if f_alpha > 0.0 and len(stroke_pts) >= 2:
+                trails_to_draw.append((stroke_pts, f_alpha))
+
+        # 2. 現在ドラッグ中のストローク
+        if self.current_trail:
+            active_pts = [p for p in self.current_trail if now - p[2] < lifetime]
+            if len(active_pts) >= 2:
+                trails_to_draw.append((active_pts, 1.0))
+
+        if not trails_to_draw:
             return
 
         sw = self.scene.sceneRect().width()
@@ -281,28 +329,30 @@ class Viewer(QMainWindow):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        for i in range(len(trail) - 1):
-            p1 = trail[i]
-            p2 = trail[i + 1]
-            avg_age = now - (p1[2] + p2[2]) * 0.5
-            progress = max(0.0, min(1.0, avg_age / lifetime))
-            alpha = int(240 * (1.0 - progress))
-            if alpha <= 0:
-                continue
+        for stroke_pts, fade_alpha in trails_to_draw:
+            smooth_path = create_smooth_path(stroke_pts, 0.0, 0.0, sw, sh)
 
-            x1 = p1[0] * sw
-            y1 = p1[1] * sh
-            x2 = p2[0] * sw
-            y2 = p2[1] * sh
+            # 1. 外側の光彩（グロー）: 継ぎ目のない単一パス
+            glow_alpha = int(120 * fade_alpha)
+            glow_pen = QPen(
+                QColor(255, 30, 30, glow_alpha),
+                base_w * 2.4,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+                Qt.PenJoinStyle.RoundJoin
+            )
+            painter.strokePath(smooth_path, glow_pen)
 
-            pen_w = max(1.5, base_w * (1.0 - progress * 0.3))
-            glow_pen = QPen(QColor(255, 30, 30, int(alpha * 0.45)), pen_w * 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(glow_pen)
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-
-            core_pen = QPen(QColor(255, 90, 90, alpha), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(core_pen)
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            # 2. 中心の明るい線（コア）: 継ぎ目のない単一パス
+            core_alpha = int(245 * fade_alpha)
+            core_pen = QPen(
+                QColor(255, 90, 90, core_alpha),
+                base_w,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+                Qt.PenJoinStyle.RoundJoin
+            )
+            painter.strokePath(smooth_path, core_pen)
 
         painter.restore()
 
@@ -411,7 +461,8 @@ class Viewer(QMainWindow):
             self.blank_overlay.raise_()
             if self.pointer_item:
                 self.pointer_item.setVisible(False)
-            self.pointer_trail.clear()
+            self.current_trail.clear()
+            self.fading_trails.clear()
             self.trail_timer.stop()
         else:
             self.blank_overlay.hide()

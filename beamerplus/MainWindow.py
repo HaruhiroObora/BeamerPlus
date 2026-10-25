@@ -643,6 +643,7 @@ class MainWindow(QMainWindow):
         self.web_bridge.toggle_sketch_visibility_command.connect(self._on_web_toggle_sketch_visibility_command)
         self.web_bridge.save_sketch_requested.connect(self._on_web_save_sketch_requested)
         self.web_bridge.client_count_changed.connect(self._on_web_client_count_changed)
+        self.web_bridge.color_command.connect(self._on_web_color_command)
 
         # コントローラからの変化を Web クライアントへブロードキャスト（ツール選択は独立管理のため除外）
         self.controller.page_changed.connect(self._sync_web_page_changed)
@@ -656,6 +657,7 @@ class MainWindow(QMainWindow):
         self.controller.blank_state_changed.connect(self._sync_web_blank_changed)
         self.controller.sketchbook_state_changed.connect(self._sync_web_sketchbook_changed)
         self.controller.sketch_visibility_changed.connect(self._sync_web_sketch_visibility_changed)
+        self.controller.color_changed.connect(self._sync_web_color_changed)
 
     def _get_slide_image_bytes(self, page_idx: int) -> bytes | None:
         if not self.pdf_reader:
@@ -776,6 +778,9 @@ class MainWindow(QMainWindow):
 
     def _on_web_line_update_command(self, norm_x: float, norm_y: float):
         self.controller.update_line_endpoint(norm_x, norm_y, pressure=1.0)
+
+    def _on_web_color_command(self, tool: str, color: str):
+        self.controller.set_tool_color(tool, color)
 
     def _on_web_page_command(self, cmd: str, page_idx: int):
         if cmd == "next":
@@ -947,6 +952,14 @@ class MainWindow(QMainWindow):
                 "normY": norm_y,
                 "visible": visible,
                 "isDown": is_down
+            })
+
+    def _sync_web_color_changed(self, tool: str, color: str):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "color_changed",
+                "tool": tool,
+                "color": color
             })
 
     def show_ipad_dialog(self):

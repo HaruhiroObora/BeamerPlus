@@ -31,23 +31,73 @@ LaTeX / Beamer 等の PDF スライドによるプレゼンテーションを快
 
 ## インストール方法
 
-### pipx を使う場合（推奨）
+### 1. pipx のインストール（初回のみ）
+
+`pipx` は Python アプリケーションをシステム環境から隔離して安全にグローバルコマンドとして管理できるツールです。まだインストールしていない場合は、お使いの OS に応じてインストールし、パスを通してください。
+
+#### 🐧 Linux (Ubuntu, Debian, Fedora, Arch 等)
+- **Ubuntu / Debian**:
+  ```bash
+  sudo apt update
+  sudo apt install pipx
+  pipx ensurepath
+  ```
+- **Fedora**:
+  ```bash
+  sudo dnf install pipx
+  pipx ensurepath
+  ```
+- **Arch Linux**:
+  ```bash
+  sudo pacman -S python-pipx
+  pipx ensurepath
+  ```
+
+#### 🍎 macOS
+Homebrew を使用してインストールします：
+```bash
+brew install pipx
+pipx ensurepath
+```
+
+#### 🪟 Windows
+PowerShell または コマンドプロンプトからインストールします：
+```powershell
+python -m pip install --user pipx
+python -m pipx ensurepath
+```
+*(Python ランチャー環境では `py -m pip install --user pipx` および `py -m pipx ensurepath`)*
+
+※ Scoop を利用する場合:
+```powershell
+scoop install pipx
+pipx ensurepath
+```
+
+> [!NOTE]
+> `pipx ensurepath` を実行した後は、環境変数の変更を反映するために**ターミナル（シェルやコマンドプロンプト）を再起動**してください。
+
+---
+
+### 2. BeamerPlus のインストール
+
+#### pipx を使う場合（推奨）
 Python アプリケーションをシステム環境から隔離してグローバルコマンドとしてインストールできます。
 
-<!-- #### 1. PyPI からインストール（公式リリース時）
 ```bash
 pipx install beamerplus
-``` -->
+```
 
-#### GitHub から直接インストール
+*(GitHub の最新開発版から直接インストールする場合)*
 ```bash
 pipx install git+https://github.com/HaruhiroObora/BeamerPlus.git
 ```
 
-### pip を使う場合
+#### pip を使う場合
 ```bash
-pip install git+https://github.com/HaruhiroObora/BeamerPlus.git
+pip install beamerplus
 ```
+*(GitHub からインストールする場合: `pip install git+https://github.com/HaruhiroObora/BeamerPlus.git`)*
 
 ---
 
@@ -57,21 +107,16 @@ pip install git+https://github.com/HaruhiroObora/BeamerPlus.git
 
 ### pipx を使う場合（推奨）
 
-GitHub からインストールしている場合、`--force` オプションを指定して再インストール（上書き更新）することで最新バージョンにアップデートできます：
-
-```bash
-pipx install --force git+https://github.com/HaruhiroObora/BeamerPlus.git
-```
-
-<!-- #### PyPI からインストールしている場合（公式リリース時）
 ```bash
 pipx upgrade beamerplus
-``` -->
+```
+
+*(※ GitHub リポジトリから直接インストールしている場合は `pipx install --force git+https://github.com/HaruhiroObora/BeamerPlus.git` を実行してください)*
 
 ### pip を使う場合
 
 ```bash
-pip install --upgrade git+https://github.com/HaruhiroObora/BeamerPlus.git
+pip install --upgrade beamerplus
 ```
 
 ---

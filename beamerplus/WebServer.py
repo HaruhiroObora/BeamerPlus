@@ -109,7 +109,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       object-fit: contain;
       pointer-events: none;
     }
-    #committed-canvas, #active-canvas {
+    #committed-canvas, #active-canvas, #pointer-canvas {
       position: absolute;
       top: 0;
       left: 0;
@@ -121,8 +121,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     #pointer-canvas {
       pointer-events: none;
     }
+    #pointer-canvas {
+      z-index: 40;
+    }
     #active-canvas {
       cursor: crosshair;
+      touch-action: none;
     }
     /* フローティングツールバー */
     #ui-container {
@@ -202,17 +206,27 @@ HTML_CONTENT = """<!DOCTYPE html>
       font-weight: bold;
       padding: 6px 14px;
     }
-    #btn-eraser-mode {
+    #btn-eraser-mode, #btn-pointer-trail {
       font-size: 11px;
       font-weight: 600;
       padding: 5px 8px;
-      color: #38bdf8;
-      border-color: rgba(56, 189, 248, 0.4);
       min-width: 68px;
       justify-content: center;
       transition: all 0.2s ease;
     }
-    #btn-eraser-mode.disabled, #btn-line.disabled {
+    #btn-eraser-mode {
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.4);
+    }
+    #btn-pointer-trail {
+      color: #ff6b6b;
+      border-color: rgba(255, 107, 107, 0.4);
+    }
+    #btn-pointer-trail.off-mode {
+      color: #888888;
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+    #btn-eraser-mode.disabled, #btn-pointer-trail.disabled, #btn-line.disabled {
       opacity: 0.35;
       pointer-events: none;
       filter: grayscale(1);
@@ -539,6 +553,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <button class="btn" id="btn-eraser" data-tool="eraser" title="消しゴム">🧹</button>
       <button class="btn disabled" id="btn-eraser-mode" title="消しゴムモード切替（通常 / オブジェクト）">通常</button>
       <button class="btn" id="btn-pointer" data-tool="pointer" title="レーザーポインタ">🔴</button>
+      <button class="btn disabled" id="btn-pointer-trail" title="ポインタ軌跡切替（なぞった時に一時的な線を引く / ドットのみ）">軌跡ON</button>
 
       <div class="separator"></div>
 
@@ -602,6 +617,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     const btnEraser = document.getElementById('btn-eraser');
     const btnEraserMode = document.getElementById('btn-eraser-mode');
     const btnPointer = document.getElementById('btn-pointer');
+    const btnPointerTrail = document.getElementById('btn-pointer-trail');
     const btnClear = document.getElementById('btn-clear');
     const btnVisibility = document.getElementById('btn-visibility');
     const btnFullscreen = document.getElementById('btn-fullscreen');
@@ -618,9 +634,18 @@ HTML_CONTENT = """<!DOCTYPE html>
     const uiToggle = document.getElementById('ui-toggle');
 
     let currentTool = null; // 初期状態ではどのツールも未選択
-    let currentColor = '#e53935';
+    let toolColors = {
+      pen: '#e53935',
+      highlighter: '#ffeb3b'
+    };
+    let currentColor = toolColors.pen;
     let eraserMode = 'partial'; // 'partial' (通常消しゴム) または 'stroke' (オブジェクト消しゴム)
     let isLineMode = false;
+    let isPointerTrailEnabled = true;
+    try {
+      const savedTrail = localStorage.getItem('beamerplus_pointer_trail');
+      if (savedTrail !== null) isPointerTrailEnabled = (savedTrail === 'true');
+    } catch (_) {}
     let toolOpacities = {
       pen: 0.85,
       highlighter: 0.28
@@ -723,6 +748,39 @@ HTML_CONTENT = """<!DOCTYPE html>
         isLineMode = !isLineMode;
       }
       updateLineModeUI();
+    });
+
+    // ポインタ軌跡切替 UI 更新
+    function updatePointerTrailUI() {
+      if (isPointerTrailEnabled) {
+        btnPointerTrail.innerText = '軌跡ON';
+        btnPointerTrail.classList.remove('off-mode');
+        btnPointerTrail.title = 'ポインタ: 軌跡ON（なぞった時に一時的な線を描画。タップでOFFに切替）';
+      } else {
+        btnPointerTrail.innerText = '軌跡OFF';
+        btnPointerTrail.classList.add('off-mode');
+        btnPointerTrail.title = 'ポインタ: 軌跡OFF（ドット移動のみ。タップでONに切替）';
+      }
+
+      if (currentTool === 'pointer') {
+        btnPointerTrail.classList.remove('disabled');
+      } else {
+        btnPointerTrail.classList.add('disabled');
+      }
+    }
+
+    btnPointerTrail.addEventListener('click', (e) => {
+      e.stopPropagation();
+      isPointerTrailEnabled = !isPointerTrailEnabled;
+      try {
+        localStorage.setItem('beamerplus_pointer_trail', String(isPointerTrailEnabled));
+      } catch (_) {}
+      if (!isPointerTrailEnabled) {
+        currentTrail = [];
+        fadingTrails = [];
+        pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
+      }
+      updatePointerTrailUI();
     });
 
     // スケッチブック / ブランク UI 更新
@@ -987,12 +1045,20 @@ HTML_CONTENT = """<!DOCTYPE html>
         renderAllStrokes(isSketchbook ? sketchbookStrokes : slideStrokes);
         loadSlideImage(currentPage);
         if (msg.type === 'state_sync') {
+          if (msg.color) toolColors.pen = msg.color;
+          if (msg.highlighterColor) toolColors.highlighter = msg.highlighterColor;
+          if (currentTool === 'highlighter') {
+            applyColor(toolColors.highlighter, 'highlighter');
+          } else {
+            applyColor(toolColors.pen, 'pen');
+          }
           if (msg.penOpacity !== undefined) toolOpacities.pen = msg.penOpacity;
           if (msg.highlighterOpacity !== undefined) toolOpacities.highlighter = msg.highlighterOpacity;
           if (msg.toolRanges) Object.assign(toolRanges, msg.toolRanges);
           updateSizeUI();
           updateEraserModeUI();
           updateLineModeUI();
+          updatePointerTrailUI();
           if (msg.isBlank !== undefined) updateBlankUI(msg.isBlank);
           if (msg.isSketchVisible !== undefined) updateSketchVisibilityUI(msg.isSketchVisible);
           if (msg.isSketchbook !== undefined) {
@@ -1052,6 +1118,14 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       } else if (msg.type === 'pointer_updated') {
         updateLaserDot(msg.normX, msg.normY, msg.visible, !!msg.isDown);
+      } else if (msg.type === 'color_changed') {
+        const tool = msg.tool || 'pen';
+        if (toolColors[tool] !== undefined) {
+          toolColors[tool] = msg.color;
+        }
+        if (currentTool === tool || (!currentTool && tool === 'pen')) {
+          applyColor(msg.color, tool);
+        }
       }
     }
 
@@ -1257,8 +1331,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       e.preventDefault(); // スクリブルやスクロールを防止
 
       if (currentTool === 'pointer') {
-        updateLaserDot(pos.normX, pos.normY, true, true);
-        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: true });
+        // ポインタ操作は Pointer Events (ホバー＆タッチ対応) で一元処理
         return;
       }
 
@@ -1308,8 +1381,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (!pos.isStylus && penOnly) return;
 
       if (currentTool === 'pointer') {
-        updateLaserDot(pos.normX, pos.normY, true, true);
-        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: true });
+        // ポインタ操作は Pointer Events (ホバー＆タッチ対応) で一元処理
         return;
       }
 
@@ -1392,8 +1464,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       isTrackingSwipe = false;
 
       if (currentTool === 'pointer') {
-        updateLaserDot(0, 0, false, false);
-        sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
+        // ポインタ操作は Pointer Events (ホバー＆タッチ対応) で一元処理
         return;
       }
 
@@ -1478,11 +1549,13 @@ HTML_CONTENT = """<!DOCTYPE html>
     uiBar.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
 
     // ポインタの一時的な軌跡（トレイル）管理
-    let pointerTrail = [];
+    let currentTrail = [];
+    let fadingTrails = []; // [{ points: [{x, y, t}, ...], releaseTime: number }]
+    let pointerIsDown = false;
     let trailAnimId = null;
 
     function addPointerTrailPoint(nx, ny) {
-      pointerTrail.push({ x: nx, y: ny, t: Date.now() });
+      currentTrail.push({ x: nx, y: ny, t: Date.now() });
       if (!trailAnimId) {
         trailAnimId = requestAnimationFrame(renderPointerTrail);
       }
@@ -1490,12 +1563,33 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function renderPointerTrail() {
       const now = Date.now();
-      const lifetime = 1200; // 1.2秒
-      pointerTrail = pointerTrail.filter(p => now - p.t < lifetime);
+      const lifetime = 450;      // 0.45秒
+      const fadeDuration = 250;  // 0.25秒
+
+      if (currentTrail.length > 0) {
+        currentTrail = currentTrail.filter(p => now - p.t < lifetime);
+      }
+      fadingTrails = fadingTrails.filter(t => now - t.releaseTime < fadeDuration);
 
       pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
 
-      if (pointerTrail.length >= 2) {
+      const trailsToDraw = [];
+
+      // 1. 離されたフェードアウト中ストローク
+      for (const t of fadingTrails) {
+        const elapsed = now - t.releaseTime;
+        const alpha = Math.max(0, Math.min(1, 1 - elapsed / fadeDuration));
+        if (alpha > 0 && t.points.length >= 2) {
+          trailsToDraw.push({ points: t.points, alpha: alpha });
+        }
+      }
+
+      // 2. 現在ドラッグ中のストローク
+      if (currentTrail.length >= 2) {
+        trailsToDraw.push({ points: currentTrail, alpha: 1.0 });
+      }
+
+      if (trailsToDraw.length > 0) {
         const w = slideWrapper.clientWidth;
         const h = slideWrapper.clientHeight;
         const baseDim = Math.min(w, h);
@@ -1504,35 +1598,49 @@ HTML_CONTENT = """<!DOCTYPE html>
         pointerCtx.lineCap = 'round';
         pointerCtx.lineJoin = 'round';
 
-        for (let i = 0; i < pointerTrail.length - 1; i++) {
-          const p1 = pointerTrail[i];
-          const p2 = pointerTrail[i + 1];
-          const avgAge = now - (p1.t + p2.t) * 0.5;
-          const progress = Math.max(0, Math.min(1, avgAge / lifetime));
-          const alpha = 1.0 - progress;
-          if (alpha <= 0) continue;
+        for (const item of trailsToDraw) {
+          const pts = item.points;
+          const alpha = item.alpha;
 
-          const penW = Math.max(1.5, baseW * (1.0 - progress * 0.3));
-
-          // 外側の光彩（グロー）
-          pointerCtx.strokeStyle = `rgba(255, 30, 30, ${alpha * 0.45})`;
-          pointerCtx.lineWidth = penW * 2.4;
           pointerCtx.beginPath();
-          pointerCtx.moveTo(p1.x * w, p1.y * h);
-          pointerCtx.lineTo(p2.x * w, p2.y * h);
+          const p0x = pts[0].x * w;
+          const p0y = pts[0].y * h;
+          pointerCtx.moveTo(p0x, p0y);
+
+          if (pts.length === 2) {
+            pointerCtx.lineTo(pts[1].x * w, pts[1].y * h);
+          } else {
+            const p1x = pts[1].x * w;
+            const p1y = pts[1].y * h;
+            pointerCtx.lineTo((p0x + p1x) * 0.5, (p0y + p1y) * 0.5);
+
+            for (let i = 1; i < pts.length - 1; i++) {
+              const cpx = pts[i].x * w;
+              const cpy = pts[i].y * h;
+              const nextX = pts[i + 1].x * w;
+              const nextY = pts[i + 1].y * h;
+              const midX = (cpx + nextX) * 0.5;
+              const midY = (cpy + nextY) * 0.5;
+              pointerCtx.quadraticCurveTo(cpx, cpy, midX, midY);
+            }
+            const lastX = pts[pts.length - 1].x * w;
+            const lastY = pts[pts.length - 1].y * h;
+            pointerCtx.lineTo(lastX, lastY);
+          }
+
+          // 1. 外側の光彩（グロー）: 一括描画
+          pointerCtx.strokeStyle = `rgba(255, 30, 30, ${0.45 * alpha})`;
+          pointerCtx.lineWidth = baseW * 2.4;
           pointerCtx.stroke();
 
-          // 中心の明るい線
-          pointerCtx.strokeStyle = `rgba(255, 90, 90, ${alpha})`;
-          pointerCtx.lineWidth = penW;
-          pointerCtx.beginPath();
-          pointerCtx.moveTo(p1.x * w, p1.y * h);
-          pointerCtx.lineTo(p2.x * w, p2.y * h);
+          // 2. 中心の明るい線（コア）: 一括描画
+          pointerCtx.strokeStyle = `rgba(255, 90, 90, ${0.95 * alpha})`;
+          pointerCtx.lineWidth = baseW;
           pointerCtx.stroke();
         }
       }
 
-      if (pointerTrail.length > 0) {
+      if (currentTrail.length > 0 || fadingTrails.length > 0) {
         trailAnimId = requestAnimationFrame(renderPointerTrail);
       } else {
         trailAnimId = null;
@@ -1540,20 +1648,164 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function updateLaserDot(normX, normY, visible, isDown) {
+      const prevDown = pointerIsDown;
+      pointerIsDown = !!isDown;
+      const now = Date.now();
+
       if (visible) {
         laserDot.style.display = 'block';
         laserDot.style.left = (normX * 100) + '%';
         laserDot.style.top = (normY * 100) + '%';
         if (isDown) {
-          addPointerTrailPoint(normX, normY);
+          if (!prevDown) {
+            // 新しいストロークの開始（前のストロークとは完全に分離）
+            if (currentTrail.length >= 2) {
+              fadingTrails.push({ points: [...currentTrail], releaseTime: now });
+            }
+            currentTrail = [{ x: normX, y: normY, t: now }];
+            if (!trailAnimId) {
+              trailAnimId = requestAnimationFrame(renderPointerTrail);
+            }
+          } else {
+            addPointerTrailPoint(normX, normY);
+          }
+        } else if (prevDown && !isDown) {
+          // 離した瞬間
+          if (currentTrail.length >= 2) {
+            fadingTrails.push({ points: [...currentTrail], releaseTime: now });
+          }
+          currentTrail = [];
         }
       } else {
         laserDot.style.display = 'none';
+        if (prevDown) {
+          if (currentTrail.length >= 2) {
+            fadingTrails.push({ points: [...currentTrail], releaseTime: now });
+          }
+          currentTrail = [];
+        }
       }
     }
 
+    // --- Apple Pencil ホバー & タッチ対応レーザーポインタ (Pointer Events) ---
+    let hoverTimeoutId = null;
+
+    function getPointerNormPos(e) {
+      const rect = slideWrapper.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const normX = rect.width > 0 ? x / rect.width : 0;
+      const normY = rect.height > 0 ? y / rect.height : 0;
+      const isInside = normX >= 0 && normX <= 1 && normY >= 0 && normY <= 1;
+      // buttons: 1 (主ボタン/タッチ), pressure > 0 (ペン接触)
+      const isDown = (e.buttons & 1) !== 0 || (typeof e.pressure === 'number' && e.pressure > 0);
+      return {
+        normX: Math.max(0, Math.min(1, normX)),
+        normY: Math.max(0, Math.min(1, normY)),
+        isInside,
+        isDown,
+        pointerType: e.pointerType
+      };
+    }
+
+    activeCanvas.addEventListener('pointermove', (e) => {
+      if (currentTool !== 'pointer') return;
+      const penOnly = penOnlyToggle.checked;
+      if (e.pointerType === 'touch' && penOnly) return;
+
+      if (hoverTimeoutId) {
+        clearTimeout(hoverTimeoutId);
+        hoverTimeoutId = null;
+      }
+
+      const pos = getPointerNormPos(e);
+      if (!pos.isInside) {
+        updateLaserDot(0, 0, false, false);
+        sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
+        return;
+      }
+
+      const effectiveDown = isPointerTrailEnabled ? pos.isDown : false;
+      updateLaserDot(pos.normX, pos.normY, true, effectiveDown);
+      sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: effectiveDown });
+    });
+
+    activeCanvas.addEventListener('pointerdown', (e) => {
+      if (currentTool !== 'pointer') return;
+      const penOnly = penOnlyToggle.checked;
+      if (e.pointerType === 'touch' && penOnly) return;
+
+      if (hoverTimeoutId) {
+        clearTimeout(hoverTimeoutId);
+        hoverTimeoutId = null;
+      }
+
+      e.preventDefault();
+      const pos = getPointerNormPos(e);
+      const effectiveDown = isPointerTrailEnabled;
+      updateLaserDot(pos.normX, pos.normY, true, effectiveDown);
+      sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: effectiveDown });
+    });
+
+    activeCanvas.addEventListener('pointerup', (e) => {
+      if (currentTool !== 'pointer') return;
+      const penOnly = penOnlyToggle.checked;
+      if (e.pointerType === 'touch' && penOnly) return;
+
+      if (hoverTimeoutId) {
+        clearTimeout(hoverTimeoutId);
+        hoverTimeoutId = null;
+      }
+
+      const pos = getPointerNormPos(e);
+      // Apple Pencil 等のスタイラスペンで画面近傍にいる場合:
+      // 直後にホバーの pointermove が来ればホバーを維持。
+      // ホバー非対応ペン（またはペンを完全に離した場合）は 80ms 以内にイベントが来ないため自動でドットも消去する。
+      if (e.pointerType === 'pen' && pos.isInside) {
+        updateLaserDot(pos.normX, pos.normY, true, false);
+        sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: false });
+
+        hoverTimeoutId = setTimeout(() => {
+          updateLaserDot(0, 0, false, false);
+          sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
+          hoverTimeoutId = null;
+        }, 80);
+      } else {
+        updateLaserDot(0, 0, false, false);
+        sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
+      }
+    });
+
+    activeCanvas.addEventListener('pointerleave', (e) => {
+      if (currentTool !== 'pointer') return;
+      const penOnly = penOnlyToggle.checked;
+      if (e.pointerType === 'touch' && penOnly) return;
+
+      if (hoverTimeoutId) {
+        clearTimeout(hoverTimeoutId);
+        hoverTimeoutId = null;
+      }
+
+      updateLaserDot(0, 0, false, false);
+      sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
+    });
+
+    activeCanvas.addEventListener('pointercancel', (e) => {
+      if (currentTool !== 'pointer') return;
+      if (hoverTimeoutId) {
+        clearTimeout(hoverTimeoutId);
+        hoverTimeoutId = null;
+      }
+      updateLaserDot(0, 0, false, false);
+      sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
+    });
+
     // --- 完全な色選択・カラーピッカー操作 ---
-    function applyColor(hex) {
+    function applyColor(hex, targetTool = null) {
+      const tool = targetTool || (currentTool === 'highlighter' ? 'highlighter' : 'pen');
+      if (toolColors[tool] !== undefined) {
+        toolColors[tool] = hex;
+      }
       currentColor = hex;
       if (colorPicker) colorPicker.value = hex;
       if (colorIndicator) colorIndicator.style.backgroundColor = hex;
@@ -1562,9 +1814,13 @@ HTML_CONTENT = """<!DOCTYPE html>
     if (colorPicker) {
       colorPicker.addEventListener('input', (e) => {
         applyColor(e.target.value);
+        const tool = (currentTool === 'highlighter') ? 'highlighter' : 'pen';
+        sendWS({ type: 'set_color', tool: tool, color: e.target.value });
       });
       colorPicker.addEventListener('change', (e) => {
         applyColor(e.target.value);
+        const tool = (currentTool === 'highlighter') ? 'highlighter' : 'pen';
+        sendWS({ type: 'set_color', tool: tool, color: e.target.value });
       });
     }
 
@@ -1573,14 +1829,22 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (currentTool === toolName) {
         // 使用しているツールのボタンを押したら選択解除（未選択状態にする）
         if (currentTool === 'pointer') {
+          if (hoverTimeoutId) { clearTimeout(hoverTimeoutId); hoverTimeoutId = null; }
           if (laserDot) laserDot.style.display = 'none';
+          currentTrail = [];
+          fadingTrails = [];
+          pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
           sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
         }
         currentTool = null;
         isLineMode = false;
       } else {
         if (currentTool === 'pointer' && toolName !== 'pointer') {
+          if (hoverTimeoutId) { clearTimeout(hoverTimeoutId); hoverTimeoutId = null; }
           if (laserDot) laserDot.style.display = 'none';
+          currentTrail = [];
+          fadingTrails = [];
+          pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
           sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
         }
         currentTool = toolName;
@@ -1588,9 +1852,9 @@ HTML_CONTENT = """<!DOCTYPE html>
           isLineMode = false;
         }
         if (toolName === 'highlighter') {
-          applyColor('#ffeb3b');
-        } else if (toolName === 'pen' && currentColor === '#ffeb3b') {
-          applyColor('#e53935');
+          applyColor(toolColors.highlighter, 'highlighter');
+        } else if (toolName === 'pen') {
+          applyColor(toolColors.pen, 'pen');
         }
       }
 
@@ -1600,6 +1864,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       updateSizeUI();
       updateEraserModeUI();
       updateLineModeUI();
+      updatePointerTrailUI();
     }
 
     [btnPen, btnHighlighter, btnEraser, btnPointer].forEach(btn => {
@@ -1628,6 +1893,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     selectTool(null);
     updateEraserModeUI();
     updateLineModeUI();
+    updatePointerTrailUI();
     adjustLayout();
   </script>
 </body>
