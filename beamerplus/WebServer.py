@@ -420,6 +420,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
     .auth-input-box {
       width: 100%;
+      position: relative;
+      display: flex;
+      align-items: center;
       margin-bottom: 6px;
     }
     #passcode-input {
@@ -432,7 +435,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       font-weight: bold;
       color: #fbbf24;
       text-align: center;
-      letter-spacing: 2px;
+      letter-spacing: 3px;
+      padding: 0 44px 0 16px;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
       -webkit-user-select: text !important;
@@ -442,6 +446,20 @@ HTML_CONTENT = """<!DOCTYPE html>
     #passcode-input:focus {
       border-color: #38bdf8;
       box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
+    }
+    #btn-toggle-pass-visibility {
+      position: absolute;
+      right: 8px;
+      background: transparent;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 6px;
+      opacity: 0.6;
+      transition: opacity 0.15s;
+    }
+    #btn-toggle-pass-visibility:active {
+      opacity: 1;
     }
     #auth-error-msg {
       min-height: 20px;
@@ -479,7 +497,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="auth-desc">PC画面の パスコード を入力してください</div>
 
       <div class="auth-input-box">
-        <input type="text" id="passcode-input" placeholder="パスコードを入力" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+        <input type="password" id="passcode-input" placeholder="パスコードを入力" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+        <button type="button" id="btn-toggle-pass-visibility" title="パスコードを表示/非表示">👁️</button>
       </div>
 
       <div id="auth-error-msg"></div>
@@ -810,6 +829,20 @@ HTML_CONTENT = """<!DOCTYPE html>
     const passcodeInput = document.getElementById('passcode-input');
     const authErrorMsg = document.getElementById('auth-error-msg');
     const btnSubmitPass = document.getElementById('btn-submit-pass');
+    const btnTogglePassVisibility = document.getElementById('btn-toggle-pass-visibility');
+
+    if (btnTogglePassVisibility) {
+      btnTogglePassVisibility.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (passcodeInput.type === 'password') {
+          passcodeInput.type = 'text';
+          btnTogglePassVisibility.innerText = '👁️‍🗨️';
+        } else {
+          passcodeInput.type = 'password';
+          btnTogglePassVisibility.innerText = '👁️';
+        }
+      });
+    }
 
     function showAuthOverlay(errorText = '') {
       authOverlay.classList.add('active');
@@ -818,6 +851,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
       if (passcodeInput) {
         passcodeInput.value = '';
+        passcodeInput.type = 'password';
+        if (btnTogglePassVisibility) btnTogglePassVisibility.innerText = '👁️';
         setTimeout(() => passcodeInput.focus(), 150);
       }
     }
