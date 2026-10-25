@@ -62,6 +62,10 @@ class MainWindow(QMainWindow):
         self.note_panel = NotePanel()
         self.center_splitter.addWidget(self.note_panel)
 
+        # 誤操作による完全な潰れ（非表示）を防ぎ、スムーズなリサイズを実現
+        self.center_splitter.setCollapsible(0, False)
+        self.center_splitter.setCollapsible(1, False)
+
         # スプリッターの比率設定 (スライド: 70%, ノート: 30%)
         self.center_splitter.setStretchFactor(0, 7)
         self.center_splitter.setStretchFactor(1, 3)

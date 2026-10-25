@@ -81,11 +81,7 @@ class PdfReader:
         idx = self._resolve_index(index)
         if idx is None:
             return None
-        # 1. ユーザーが手動編集・保存したノート（JSON）があればそれを優先
-        if idx in self.notes and self.notes[idx]:
-            return self.notes[idx]
-        # 2. なければ PDF 埋め込みノート（2画面ノートテキストまたはアノテーション）を返す
-        return self.get_embedded_note(idx)
+        return self.notes.get(idx, "")
 
     def is_dual_screen_page(self, index: str | int) -> bool:
         """ページが左右または上下の2画面（スライド＋ノート）形式か判定"""
@@ -100,42 +96,6 @@ class PdfReader:
         if rect.height > rect.width * 1.1:
             return True
         return False
-
-    def get_embedded_note(self, index: str | int) -> str:
-        """
-        PDFページからBeamerの埋め込みノート（2画面レイアウトのノート側テキスト、またはアノテーション注釈）を抽出する
-        """
-        idx = self._resolve_index(index)
-        if idx is None:
-            return ""
-
-        page = self.document[idx]
-        rect = page.rect
-        extracted_texts: list[str] = []
-
-        # 1. 左右2画面形式 (show notes on second screen=right など) -> 右半分がノート領域
-        if rect.width > rect.height * 2.0:
-            notes_clip = pymupdf.Rect(rect.width / 2.0, 0, rect.width, rect.height)
-            txt = page.get_text("text", clip=notes_clip).strip()
-            if txt:
-                extracted_texts.append(txt)
-
-        # 2. 上下2画面形式 (show notes on second screen=bottom など) -> 下半分がノート領域
-        elif rect.height > rect.width * 1.1:
-            notes_clip = pymupdf.Rect(0, rect.height / 2.0, rect.width, rect.height)
-            txt = page.get_text("text", clip=notes_clip).strip()
-            if txt:
-                extracted_texts.append(txt)
-
-        # 3. PDF アノテーション (/Text, /FreeText 注釈)
-        annots = page.annots()
-        if annots:
-            for a in annots:
-                content = a.info.get("content", "").strip()
-                if content and content not in extracted_texts:
-                    extracted_texts.append(content)
-
-        return "\n\n".join(extracted_texts)
 
     def get_embedded_note_image(
         self, index: str | int, size: QSize | None = None, dpi: int = DEFAULT_DPI
@@ -171,11 +131,8 @@ class PdfReader:
         return pixmap
 
     def has_embedded_note(self, index: str | int) -> bool:
-        """指定ページに埋め込みノート（テキストまたは2画面画像）が存在するか"""
-        if self.is_dual_screen_page(index):
-            return True
-        note_txt = self.get_embedded_note(index)
-        return bool(note_txt.strip())
+        """指定ページに埋め込みノート画面が存在するか（2画面レイアウト判定）"""
+        return self.is_dual_screen_page(index)
 
     def save_note(self, index: str | int, note: str) -> None:
         idx = self._resolve_index(index)

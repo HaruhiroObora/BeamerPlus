@@ -1,12 +1,44 @@
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QColorDialog, QToolButton, QLabel, QFrame, QSlider
+    QColorDialog, QToolButton, QLabel, QFrame, QSlider, QScrollArea
 )
 from PySide6.QtGui import QColor, QPixmap
 
 from beamerplus.DrawingModel import PresentationController
 from beamerplus.SlideCanvas import SlideCanvas
+
+
+class ToolbarScrollArea(QScrollArea):
+    """メインスライド上部のツールバーを柔軟に収めるための横スクロールコンテナ。
+    ウィンドウ幅やスプリッターの調整で領域が狭くなった場合でもツールバーがはみ出さず、
+    ホイールやスクロールバーで快適に全機能へアクセス可能。"""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFixedHeight(46)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QScrollArea { background-color: #252526; border-bottom: 1px solid #333333; }"
+            "QScrollBar:horizontal { height: 4px; background: #252526; margin: 0; }"
+            "QScrollBar::handle:horizontal { background: #444448; border-radius: 2px; min-width: 20px; }"
+            "QScrollBar::handle:horizontal:hover { background: #007acc; }"
+            "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; height: 0px; }"
+            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }"
+        )
+
+    def wheelEvent(self, event):
+        # 縦ホイール回転またはトラックパッドの水平スクロールを処理
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta != 0:
+            sb = self.horizontalScrollBar()
+            sb.setValue(sb.value() - int(delta * 0.8))
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
 
 class SimpleView(QWidget):
@@ -16,13 +48,21 @@ class SimpleView(QWidget):
         super().__init__(parent)
         self.controller = controller
 
+        # 最小サイズを柔軟な値に設定（スプリッターやウィンドウ縮小でスライド画面を小さくできるようにする）
+        self.setMinimumSize(QSize(180, 150))
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ツールバー作成
-        self.toolbar = self._create_toolbar()
-        layout.addWidget(self.toolbar)
+        # ツールバー作成（横スクロールコンテナでラップして最小サイズ制約を解消）
+        self.toolbar_content = self._create_toolbar()
+        self.toolbar_scroll = ToolbarScrollArea(self)
+        self.toolbar_scroll.setWidget(self.toolbar_content)
+        layout.addWidget(self.toolbar_scroll)
+
+        # 互換性のため self.toolbar も保持
+        self.toolbar = self.toolbar_content
 
         # スライドキャンバス
         self.canvas = SlideCanvas(self.controller)
@@ -45,8 +85,8 @@ class SimpleView(QWidget):
         bar = QFrame()
         bar.setFixedHeight(46)
         bar.setStyleSheet(
-            "QFrame { background-color: #252526; border-bottom: 1px solid #333333; }"
-            "QPushButton, QToolButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 4px 10px; font-size: 12px; }"
+            "QFrame { background-color: #252526; border: none; }"
+            "QPushButton, QToolButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 4px 7px; font-size: 12px; }"
             "QPushButton:hover, QToolButton:hover { background-color: #444444; }"
             "QPushButton:checked, QToolButton:checked { background-color: #007acc; border-color: #0098ff; }"
             "QLabel { color: #cccccc; font-size: 12px; }"
@@ -56,8 +96,8 @@ class SimpleView(QWidget):
             "QSlider::handle:horizontal:hover { background: #4fc3f7; }"
         )
         bar_layout = QHBoxLayout(bar)
-        bar_layout.setContentsMargins(10, 4, 10, 4)
-        bar_layout.setSpacing(6)
+        bar_layout.setContentsMargins(8, 2, 8, 2)
+        bar_layout.setSpacing(5)
 
         # 基本ツールボタン
         self.btn_pointer = QPushButton("🔴")
@@ -94,11 +134,11 @@ class SimpleView(QWidget):
         self.btn_eraser_mode = QPushButton("通常")
         self.btn_eraser_mode.setToolTip("消しゴムモード: 通常（なぞった部分のみ消去。クリックでオブジェクト消しゴムに切替）")
         self.btn_eraser_mode.setStyleSheet(
-            "QPushButton { background-color: #38383c; color: #4fc3f7; border: 1px solid #555558; border-radius: 3px; padding: 2px 6px; font-size: 11px; }"
+            "QPushButton { background-color: #38383c; color: #4fc3f7; border: 1px solid #555558; border-radius: 3px; padding: 2px 4px; font-size: 11px; }"
             "QPushButton:hover { background-color: #48484e; color: #ffffff; }"
             "QPushButton:disabled { background-color: #2a2a2d; color: #555558; border-color: #38383c; }"
         )
-        self.btn_eraser_mode.setFixedWidth(105)
+        self.btn_eraser_mode.setFixedWidth(82)
         self.btn_eraser_mode.clicked.connect(self.controller.toggle_eraser_mode)
         self.btn_eraser_mode.setEnabled(False)  # 常に表示し、消しゴム選択時のみ有効化
         bar_layout.addWidget(self.btn_eraser_mode)
@@ -121,7 +161,7 @@ class SimpleView(QWidget):
         # ペン / 蛍光ペンの色選択ボタン
         self.btn_color = QPushButton("■")
         self.btn_color.setToolTip("選択中ツール（ペン/蛍光ペン）の色を変更")
-        self.btn_color.setStyleSheet(f"color: {self.controller.pen_color}; font-size: 16px; padding: 2px 8px;")
+        self.btn_color.setStyleSheet(f"color: {self.controller.pen_color}; font-size: 16px; padding: 2px 6px;")
         self.btn_color.clicked.connect(self._choose_color)
         bar_layout.addWidget(self.btn_color)
 
@@ -134,20 +174,20 @@ class SimpleView(QWidget):
         # --- 共通サイズスライダー ---
         self.lbl_size_title = QLabel("太さ:")
         self.lbl_size_title.setStyleSheet("color: #aaaaaa; font-size: 11px;")
-        self.lbl_size_title.setFixedWidth(48)
+        self.lbl_size_title.setFixedWidth(38)
         self.lbl_size_title.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         bar_layout.addWidget(self.lbl_size_title)
 
         self.size_slider = QSlider(Qt.Orientation.Horizontal)
         self.size_slider.setRange(1, 160)
         self.size_slider.setValue(18)
-        self.size_slider.setFixedWidth(90)
+        self.size_slider.setFixedWidth(70)
         self.size_slider.setToolTip("選択中ツールの太さ・半径を変更")
         self.size_slider.valueChanged.connect(self._on_slider_value_changed)
         bar_layout.addWidget(self.size_slider)
 
         self.lbl_size_val = QLabel("18")
-        self.lbl_size_val.setFixedWidth(28)
+        self.lbl_size_val.setFixedWidth(24)
         self.lbl_size_val.setStyleSheet("color: #4fc3f7; font-size: 11px;")
         bar_layout.addWidget(self.lbl_size_val)
 
@@ -183,7 +223,7 @@ class SimpleView(QWidget):
         bar_layout.addWidget(self.btn_prev)
 
         self.page_label = QLabel("0 / 0")
-        self.page_label.setFixedWidth(64)
+        self.page_label.setFixedWidth(56)
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bar_layout.addWidget(self.page_label)
 

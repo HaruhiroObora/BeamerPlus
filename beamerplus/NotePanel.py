@@ -98,14 +98,6 @@ class NotePanel(QWidget):
         self.btn_pdf_note_view.setVisible(False)
         tb_layout.addWidget(self.btn_pdf_note_view)
 
-        # PDF埋め込みノートのテキストを取り込むボタン
-        self.btn_import_pdf_note = QPushButton("📥 取り込み")
-        self.btn_import_pdf_note.setStyleSheet(self._btn_style())
-        self.btn_import_pdf_note.setToolTip("PDFに埋め込まれたノートテキストをメモに取り込む")
-        self.btn_import_pdf_note.clicked.connect(self._import_embedded_note)
-        self.btn_import_pdf_note.setVisible(False)
-        tb_layout.addWidget(self.btn_import_pdf_note)
-
         self.btn_edit = QPushButton("✏️ 編集")
         self.btn_edit.setCheckable(True)
         self.btn_edit.setChecked(False)  # デフォルトはプレビューモード（未選択）
@@ -114,7 +106,7 @@ class NotePanel(QWidget):
         self.btn_edit.clicked.connect(self._toggle_edit_mode)
         tb_layout.addWidget(self.btn_edit)
 
-        for btn in (self.btn_pdf_note_view, self.btn_import_pdf_note, self.btn_edit):
+        for btn in (self.btn_pdf_note_view, self.btn_edit):
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         note_layout.addLayout(tb_layout)
@@ -203,28 +195,6 @@ class NotePanel(QWidget):
             self._render_preview(user_text)
             self.note_stack.setCurrentIndex(1)
 
-    def _import_embedded_note(self):
-        """PDFに埋め込まれたノートテキストをエディタに取り込む"""
-        if not self.pdf_reader:
-            return
-        emb_text = self.pdf_reader.get_embedded_note(self.active_page_index)
-        if not emb_text:
-            return
-        current_text = self.editor.toPlainText().strip()
-        if current_text:
-            new_text = current_text + "\n\n" + emb_text
-        else:
-            new_text = emb_text
-        self.editor.setPlainText(new_text)
-        self.save_current_note_to_memory()
-        self._render_preview(new_text)
-
-        # 編集モードに切り替えてエディタにフォーカス
-        self.btn_edit.setChecked(True)
-        self.btn_pdf_note_view.setChecked(False)
-        self.note_stack.setCurrentIndex(0)
-        self.editor.setFocus()
-
     def _update_pdf_note_image_display(self):
         if self._current_note_pixmap and not self._current_note_pixmap.isNull():
             target_w = max(240, self.note_scroll_area.viewport().width() - 16)
@@ -239,25 +209,15 @@ class NotePanel(QWidget):
             self._update_pdf_note_image_display()
 
     def _render_preview(self, md_text: str):
-        embedded_text = ""
-        if self.pdf_reader:
-            embedded_text = self.pdf_reader.get_embedded_note(self.active_page_index)
-
-        user_has_text = bool(md_text.strip())
-        embedded_has_text = bool(embedded_text.strip())
-
-        if user_has_text and embedded_has_text:
-            # ユーザーノートと埋め込みノートが重複していなければ併記表示
-            if embedded_text in md_text:
-                full_md = md_text
-            else:
-                full_md = f"{md_text}\n\n---\n\n#### 📄 PDF埋め込みノート (Beamer)\n\n{embedded_text}"
-            self.preview.setMarkdown(full_md)
-        elif user_has_text:
+        if md_text.strip():
             self.preview.setMarkdown(md_text)
-        elif embedded_has_text:
-            full_md = f"#### 📄 PDF埋め込みノート (Beamer)\n\n{embedded_text}"
-            self.preview.setMarkdown(full_md)
+        elif self.pdf_reader and self.pdf_reader.is_dual_screen_page(self.active_page_index):
+            self.preview.setHtml(
+                "<p style='color: #888888; font-style: italic; line-height: 1.5;'>"
+                "（このスライドの個別メモはありません。<br>"
+                "上部の「📄 PDFノート画面」からBeamer組版のノート画面を表示できます。<br>"
+                "「✏️ 編集」ボタンで自由なメモを追加できます）</p>"
+            )
         else:
             self.preview.setHtml("<p style='color: #666666; font-style: italic;'>（このスライドのノートはありません。「✏️ 編集」ボタンで記述できます）</p>")
 
@@ -281,33 +241,29 @@ class NotePanel(QWidget):
                 "background-color: #161618; color: #666666; font-size: 11px; border: 1px solid #333336; border-radius: 4px;"
             )
 
-        # PDF埋め込みノートの取得
-        embedded_text = ""
+        # PDFノート画面画像（2画面レイアウト時）の取得
         has_note_image = False
         self._current_note_pixmap = None
 
         if self.pdf_reader:
-            embedded_text = self.pdf_reader.get_embedded_note(index)
             has_note_image = self.pdf_reader.is_dual_screen_page(index)
             if has_note_image:
                 self._current_note_pixmap = self.pdf_reader.get_embedded_note_image(index)
 
         # ツールバーボタンの表示切り替え
         self.btn_pdf_note_view.setVisible(has_note_image)
-        self.btn_import_pdf_note.setVisible(bool(embedded_text.strip()))
 
         # PDFノート画像の更新
         self._update_pdf_note_image_display()
 
-        # ノートテキスト読み込み（手動保存ノートがあればそれを優先、無ければ空）
+        # ユーザー手動ノート読み込み
         manual_note = ""
         if self.pdf_reader and index in self.pdf_reader.notes:
             manual_note = self.pdf_reader.notes[index]
 
         # エディタの初期テキスト
-        editor_text = manual_note if manual_note else embedded_text
         self.editor.blockSignals(True)
-        self.editor.setPlainText(editor_text)
+        self.editor.setPlainText(manual_note)
         self.editor.blockSignals(False)
 
         self.lbl_page_note.setText(f"スライド {index + 1}")
