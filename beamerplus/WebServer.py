@@ -694,9 +694,9 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       <div class="separator"></div>
 
-      <label class="switch-label">
+      <label class="switch-label" title="スタイラスペン（Apple Pencil / S-Pen 等）のみ描画し、指でのタッチはスワイプ（ページめくり）専用にする">
         <input type="checkbox" id="penOnlyToggle" checked>
-        <span>Pencilのみ描画</span>
+        <span>ペンのみ描画</span>
       </label>
 
       <div class="separator"></div>
@@ -1366,7 +1366,33 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
-    // --- Apple Pencil / タッチ座標正規化 ---
+    // --- 入力デバイス（Apple Pencil / Galaxy S-Pen / 指タッチ）のクロスプラットフォーム判定 ---
+    let lastPointerType = 'touch';
+    window.addEventListener('pointerdown', (e) => {
+      lastPointerType = e.pointerType;
+    }, { capture: true, passive: true });
+
+    window.addEventListener('pointermove', (e) => {
+      if (e.buttons !== 0) {
+        lastPointerType = e.pointerType;
+      }
+    }, { capture: true, passive: true });
+
+    window.addEventListener('pointerup', (e) => {
+      if (e.pointerType === 'pen') {
+        setTimeout(() => {
+          if (lastPointerType === 'pen') lastPointerType = 'touch';
+        }, 120);
+      } else {
+        lastPointerType = 'touch';
+      }
+    }, { capture: true, passive: true });
+
+    window.addEventListener('pointercancel', (e) => {
+      lastPointerType = 'touch';
+    }, { capture: true, passive: true });
+
+    // --- スタイラス / タッチ座標正規化 ---
     function getNormalizedPos(e) {
       const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
       const rect = slideWrapper.getBoundingClientRect();
@@ -1374,11 +1400,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       const clientY = touch ? touch.clientY : 0;
       const x = clientX - rect.left;
       const y = clientY - rect.top;
+      // Apple Pencil (WebKit touchType) または W3C Pointer Events (Android S-Pen 等) のいずれかでペン判定
+      const isStylus = (touch && touch.touchType === 'stylus') || (lastPointerType === 'pen');
       return {
         normX: Math.max(0, Math.min(1, rect.width > 0 ? x / rect.width : 0)),
         normY: Math.max(0, Math.min(1, rect.height > 0 ? y / rect.height : 0)),
         touch: touch,
-        isStylus: touch ? touch.touchType === 'stylus' : false,
+        isStylus: isStylus,
         force: (touch && typeof touch.force === 'number' && touch.force > 0) ? touch.force : 0.6
       };
     }
