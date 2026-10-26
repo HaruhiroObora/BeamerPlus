@@ -119,10 +119,12 @@ class BookmarkDrawer(QWidget):
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
         )
         
-        # 列幅設定（タイトルを広げ、ページ番号列は固定幅で右寄せ）
+        # 列幅設定（名前側を最大限広くし、ページ番号列は右端にコンパクトな固定幅）
         header = self.tree.header()
+        header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.tree.setColumnWidth(1, 52)
 
         self.tree.itemClicked.connect(self._on_item_clicked)
         panel_layout.addWidget(self.tree, 1)
@@ -211,6 +213,7 @@ class BookmarkDrawer(QWidget):
             item = QTreeWidgetItem([title, f"P. {page_idx + 1}"])
             item.setData(0, Qt.ItemDataRole.UserRole, page_idx)
             item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            item.setForeground(1, QColor("#888888"))
             item.setToolTip(0, f"{title} (ページ {page_idx + 1})")
 
             # 現在の深さ以上のスタックをポップして適切な親を特定
