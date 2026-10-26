@@ -17,7 +17,7 @@ class BookmarkDrawer(QWidget):
 
     PANEL_WIDTH = 300
     TAB_WIDTH = 26
-    TAB_HEIGHT = 64
+    TAB_HEIGHT = 56
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -43,12 +43,13 @@ class BookmarkDrawer(QWidget):
         )
         self.panel.setObjectName("BookmarkPanel")
 
-        # ドロップシャドウ効果
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(15)
-        shadow.setColor(QColor(0, 0, 0, 160))
-        shadow.setOffset(4, 0)
-        self.panel.setGraphicsEffect(shadow)
+        # ドロップシャドウ効果（引き出したときのみ有効化）
+        self.shadow = QGraphicsDropShadowEffect(self)
+        self.shadow.setBlurRadius(15)
+        self.shadow.setColor(QColor(0, 0, 0, 160))
+        self.shadow.setOffset(4, 0)
+        self.shadow.setEnabled(False)  # 引き出されていない時は無効化（UIマスク防止）
+        self.panel.setGraphicsEffect(self.shadow)
 
         panel_layout = QVBoxLayout(self.panel)
         panel_layout.setContentsMargins(10, 10, 10, 10)
@@ -136,12 +137,13 @@ class BookmarkDrawer(QWidget):
         self.tab_button.setToolTip("しおり / 目次を開く (Ctrl+B)")
         self.tab_button.setStyleSheet(
             "QPushButton#DrawerTabBtn {"
-            "  background-color: rgba(45, 45, 48, 0.9);"
+            "  background-color: rgba(45, 45, 48, 0.95);"
             "  color: #cccccc;"
             "  border: 1px solid #3e3e42;"
             "  border-left: none;"
+            "  border-bottom: none;"
             "  border-top-right-radius: 6px;"
-            "  border-bottom-right-radius: 6px;"
+            "  border-bottom-right-radius: 0px;"
             "  font-size: 14px;"
             "  font-weight: bold;"
             "  padding: 0px;"
@@ -158,6 +160,7 @@ class BookmarkDrawer(QWidget):
         self.animation = QPropertyAnimation(self, b"pos")
         self.animation.setDuration(220)
         self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.animation.finished.connect(self._on_animation_finished)
 
         # 親イベントの監視設定
         if parent:
@@ -167,15 +170,15 @@ class BookmarkDrawer(QWidget):
         self.hide()
 
     def update_layout(self):
-        """親ウィジェットの高さに合わせて自身とパネルの高さを調整し、タブ位置を更新"""
-        if not self.parent():
+        """親ウィジェットの高さに合わせて自身とパネルの高さを調整し、タブ位置をウィンドウ最下部に配置"""
+        h = self.parent().height() if self.parent() else self.height()
+        if h <= 0:
             return
-        h = self.parent().height()
         self.setFixedHeight(h)
         self.panel.setGeometry(0, 0, self.PANEL_WIDTH, h)
 
-        # タブボタンの縦位置（上から約100px付近に配置）
-        tab_y = min(120, max(20, (h - self.TAB_HEIGHT) // 3))
+        # タブボタンの縦位置: ウィンドウ最下部
+        tab_y = max(0, h - self.TAB_HEIGHT)
         self.tab_button.setGeometry(self.PANEL_WIDTH, tab_y, self.TAB_WIDTH, self.TAB_HEIGHT)
 
         # 開閉状態に応じたX位置
@@ -299,6 +302,7 @@ class BookmarkDrawer(QWidget):
         self.is_open = True
         self.tab_button.setText("<")
         self.tab_button.setToolTip("しおり / 目次を閉じる (Esc, Ctrl+B)")
+        self.shadow.setEnabled(True)  # 引き出したときに影を有効化
         self.raise_()
         self._animate_to(0)
         self.search_edit.setFocus()
@@ -317,11 +321,25 @@ class BookmarkDrawer(QWidget):
         if app:
             app.removeEventFilter(self)
 
+    def _on_animation_finished(self):
+        # 完全に閉じた後は影エフェクトを無効化してUIマスクを完全に防止
+        if not self.is_open:
+            self.shadow.setEnabled(False)
+
     def _animate_to(self, target_x: int):
         self.animation.stop()
         self.animation.setStartValue(self.pos())
         self.animation.setEndValue(QPoint(target_x, 0))
         self.animation.start()
+
+    def mousePressEvent(self, event):
+        """引き出されていない時はタブボタン以外の領域をクリックしても背後へイベントを透過"""
+        if not self.is_open:
+            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            if not self.tab_button.geometry().contains(pos):
+                event.ignore()
+                return
+        super().mousePressEvent(event)
 
     def eventFilter(self, watched, event: QEvent) -> bool:
         """親ウィジェットのリサイズ追従、外側クリック検知、およびEscキー処理"""

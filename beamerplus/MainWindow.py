@@ -445,6 +445,7 @@ class MainWindow(QMainWindow):
             self.thumbnail_bar.load_pdf(self.pdf_reader)
             self.bookmark_drawer.load_pdf(self.pdf_reader)
             has_toc = self.pdf_reader.has_toc
+            self.thumbnail_bar.set_left_indent(34 if has_toc else 0)
             self.btn_toggle_bookmarks.setEnabled(has_toc)
             self.act_toggle_bookmarks.setEnabled(has_toc)
             self.setWindowTitle(f"BeamerPlus 発表者ビュー - {os.path.basename(path)}")
