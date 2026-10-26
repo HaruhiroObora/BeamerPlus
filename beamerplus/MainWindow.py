@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPainter, QColor,
 from beamerplus.PdfReader import PdfReader
 from beamerplus.DrawingModel import PresentationController, create_smooth_path
 from beamerplus.ThumbnailBar import ThumbnailBar
+from beamerplus.BookmarkDrawer import BookmarkDrawer
 from beamerplus.SimpleView import SimpleView
 from beamerplus.NotePanel import NotePanel
 from beamerplus.Viewer import Viewer
@@ -76,6 +77,10 @@ class MainWindow(QMainWindow):
         self.thumbnail_bar = ThumbnailBar()
         self.thumbnail_bar.page_selected.connect(self.controller.set_page)
         self.main_layout.addWidget(self.thumbnail_bar)
+
+        # 4. しおり（目次）引き出しオーバーレイ
+        self.bookmark_drawer = BookmarkDrawer(central_widget)
+        self.bookmark_drawer.page_selected.connect(self.controller.set_page)
 
         # コントローラからのシグナル受信
         self.controller.page_changed.connect(self._on_page_changed)
@@ -148,6 +153,12 @@ class MainWindow(QMainWindow):
         self.act_toggle_thumbnails.setChecked(True)
         self.act_toggle_thumbnails.triggered.connect(self.toggle_thumbnail_bar)
         view_menu.addAction(self.act_toggle_thumbnails)
+
+        self.act_toggle_bookmarks = QAction("しおり（目次）の表示/非表示", self)
+        self.act_toggle_bookmarks.setShortcut("Ctrl+B")
+        self.act_toggle_bookmarks.setEnabled(False)
+        self.act_toggle_bookmarks.triggered.connect(self.toggle_bookmark_drawer)
+        view_menu.addAction(self.act_toggle_bookmarks)
 
         self.act_toggle_toolbar = QAction("メインツールバーの表示/非表示", self)
         self.act_toggle_toolbar.setCheckable(True)
@@ -236,6 +247,14 @@ class MainWindow(QMainWindow):
         self.btn_toggle_thumbs.setToolTip("スライド一覧バーの表示/非表示 (Ctrl+T)")
         self.btn_toggle_thumbs.clicked.connect(self.toggle_thumbnail_bar)
         self.main_toolbar.addWidget(self.btn_toggle_thumbs)
+
+        # 表示トグルボタン: しおり
+        self.btn_toggle_bookmarks = QPushButton("📑 しおり")
+        self.btn_toggle_bookmarks.setStyleSheet(self._tb_btn_style())
+        self.btn_toggle_bookmarks.setToolTip("しおり（目次）引き出しの表示/非表示 (Ctrl+B)")
+        self.btn_toggle_bookmarks.clicked.connect(self.toggle_bookmark_drawer)
+        self.btn_toggle_bookmarks.setEnabled(False)
+        self.main_toolbar.addWidget(self.btn_toggle_bookmarks)
 
         self.main_toolbar.addSeparator()
 
@@ -329,6 +348,16 @@ class MainWindow(QMainWindow):
         self.btn_toggle_thumbs.setChecked(is_visible)
         self.act_toggle_thumbnails.setChecked(is_visible)
 
+    def toggle_bookmark_drawer(self):
+        """しおり（目次）引き出しオーバーレイの表示/非表示切り替え (Ctrl+B)"""
+        if hasattr(self, "bookmark_drawer"):
+            self.bookmark_drawer.toggle_drawer()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "bookmark_drawer"):
+            self.bookmark_drawer.update_layout()
+
     def toggle_main_toolbar(self):
         """メインツールバーの表示/非表示切り替え"""
         is_visible = not self.main_toolbar.isVisible()
@@ -414,6 +443,10 @@ class MainWindow(QMainWindow):
             self.controller.set_total_pages(len(self.pdf_reader))
             self.note_panel.set_pdf_reader(self.pdf_reader)
             self.thumbnail_bar.load_pdf(self.pdf_reader)
+            self.bookmark_drawer.load_pdf(self.pdf_reader)
+            has_toc = self.pdf_reader.has_toc
+            self.btn_toggle_bookmarks.setEnabled(has_toc)
+            self.act_toggle_bookmarks.setEnabled(has_toc)
             self.setWindowTitle(f"BeamerPlus 発表者ビュー - {os.path.basename(path)}")
 
             # 最初のページを表示
@@ -456,6 +489,9 @@ class MainWindow(QMainWindow):
 
         # サムネイルバー更新
         self.thumbnail_bar.set_current_page(index)
+
+        # しおりハイライト更新
+        self.bookmark_drawer.highlight_current_page(index)
 
     def save_notes(self):
         if self.pdf_reader:

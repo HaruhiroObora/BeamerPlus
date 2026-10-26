@@ -73,6 +73,24 @@ class PdfReader:
         self.page_labels = [_decode_page_label(page.get_label()) for page in self.document]
         self._image_cache: dict[tuple[int, int, bool], QPixmap] = {}
 
+        # しおり（目次）の抽出: [(lvl, title, page_idx), ...]
+        self.toc: list[tuple[int, str, int]] = []
+        try:
+            raw_toc = self.document.get_toc()
+            for item in raw_toc:
+                if len(item) >= 3:
+                    lvl = int(item[0])
+                    title = _decode_page_label(str(item[1])).strip()
+                    p = int(item[2])
+                    page_idx = max(0, p - 1) if p > 0 else 0
+                    self.toc.append((lvl, title, page_idx))
+        except Exception:
+            self.toc = []
+
+    @property
+    def has_toc(self) -> bool:
+        return len(self.toc) > 0
+
     @property
     def page_count(self) -> int:
         return len(self.document)
