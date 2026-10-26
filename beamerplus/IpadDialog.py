@@ -3,11 +3,13 @@ import urllib.parse
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QApplication, QLineEdit
+    QFrame, QApplication, QLineEdit, QComboBox
 )
 from PySide6.QtGui import QFont, QPixmap, QImage, QPainter, QColor
 
-from beamerplus.WebServer import get_local_ip, WebBridge, generate_passcode
+from beamerplus.WebServer import (
+    get_local_ip, get_network_interfaces, WebBridge, generate_passcode
+)
 
 
 class IpadDialog(QDialog):
@@ -28,7 +30,7 @@ class IpadDialog(QDialog):
         self.on_passcode_changed = on_passcode_changed
 
         self.setWindowTitle("📱 iPad / タブレット連携")
-        self.setFixedSize(460, 560)
+        self.setFixedSize(480, 620)
         self.setStyleSheet("""
             QDialog {
                 background-color: #1e1e24;
@@ -55,8 +57,8 @@ class IpadDialog(QDialog):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 20, 28, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(28, 16, 28, 16)
+        layout.setSpacing(10)
 
         # ヘッダー
         title_label = QLabel("📱 iPad から手書き書き込み・リモート操作")
@@ -84,19 +86,95 @@ class IpadDialog(QDialog):
             }
         """)
         card_layout = QVBoxLayout(url_card)
-        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setContentsMargins(14, 12, 14, 12)
         card_layout.setSpacing(8)
 
-        self.local_ip = get_local_ip()
-        self.base_url = f"http://{self.local_ip}:{self.http_port}"
-        self.auth_url = f"{self.base_url}/?code={self.passcode}" if self.passcode else self.base_url
+        # ネットワークインターフェース選択
+        net_box = QVBoxLayout()
+        net_box.setSpacing(4)
 
-        self.url_label = QLabel(self.base_url)
+        lbl_net = QLabel("🌐 接続先ネットワーク / IP:")
+        lbl_net.setStyleSheet("color: #a0a0b0; font-size: 12px; font-weight: 500;")
+        net_box.addWidget(lbl_net)
+
+        combo_row = QHBoxLayout()
+        combo_row.setSpacing(6)
+
+        self.interface_combo = QComboBox()
+        self.interface_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #242430;
+                color: #ffffff;
+                border: 1px solid #3f3f50;
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 13px;
+                font-weight: 500;
+                min-height: 24px;
+            }
+            QComboBox:hover {
+                border-color: #38bdf8;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 24px;
+                border-left: 1px solid #3f3f50;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #1e1e24;
+                color: #f0f0f0;
+                selection-background-color: #007acc;
+                selection-color: #ffffff;
+                border: 1px solid #3f3f50;
+                padding: 4px;
+            }
+        """)
+
+        # ネットワーク再検出ボタン
+        self.btn_refresh_net = QPushButton("🔄")
+        self.btn_refresh_net.setToolTip("ネットワークインターフェースを再検出")
+        self.btn_refresh_net.setFixedSize(30, 30)
+        self.btn_refresh_net.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2b36;
+                color: #ffffff;
+                border: 1px solid #3f3f50;
+                border-radius: 6px;
+                font-size: 14px;
+                padding: 0;
+            }
+            QPushButton:hover {
+                background-color: #383848;
+                border-color: #38bdf8;
+            }
+            QPushButton:pressed {
+                background-color: #007acc;
+            }
+        """)
+        self.btn_refresh_net.clicked.connect(self._refresh_network_interfaces)
+
+        combo_row.addWidget(self.interface_combo, 1)
+        combo_row.addWidget(self.btn_refresh_net)
+        net_box.addLayout(combo_row)
+        card_layout.addLayout(net_box)
+
+        self.current_host = ""
+        self.base_url = ""
+        self.auth_url = ""
+
+        self.url_label = QLabel()
         url_font = QFont("Monospace", 14, QFont.Weight.Bold)
         self.url_label.setFont(url_font)
         self.url_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.url_label.setStyleSheet("color: #38bdf8; padding: 2px;")
         card_layout.addWidget(self.url_label)
+
+        # インターフェース一覧をセット
+        self._populate_interfaces()
+        self.interface_combo.currentIndexChanged.connect(self._on_interface_changed)
 
         if self.passcode:
             passcode_box = QHBoxLayout()
@@ -198,7 +276,7 @@ class IpadDialog(QDialog):
         qr_center_box.addStretch()
         layout.addLayout(qr_center_box)
 
-        self._load_qr_code()
+        self._update_urls()
 
         # 接続状態インジケータ
         status_box = QHBoxLayout()
@@ -222,6 +300,49 @@ class IpadDialog(QDialog):
         # シグナル接続
         self.bridge.client_count_changed.connect(self.update_client_count)
 
+    def _populate_interfaces(self, select_host: str | None = None):
+        self.interface_combo.blockSignals(True)
+        self.interface_combo.clear()
+        interfaces = get_network_interfaces()
+
+        selected_index = 0
+        for idx, iface in enumerate(interfaces):
+            self.interface_combo.addItem(iface["display"], userData=iface["host"])
+            if select_host is not None:
+                if iface["host"] == select_host:
+                    selected_index = idx
+            elif iface.get("is_default", False):
+                selected_index = idx
+
+        if self.interface_combo.count() > 0:
+            self.interface_combo.setCurrentIndex(selected_index)
+            self.current_host = self.interface_combo.currentData()
+        else:
+            self.current_host = "127.0.0.1"
+
+        self.interface_combo.blockSignals(False)
+
+    def _on_interface_changed(self, index: int):
+        host = self.interface_combo.itemData(index)
+        if host:
+            self.current_host = host
+            self._update_urls()
+
+    def _refresh_network_interfaces(self):
+        prev_host = self.current_host
+        self._populate_interfaces(select_host=prev_host)
+        self._update_urls()
+
+    def _update_urls(self):
+        self.base_url = f"http://{self.current_host}:{self.http_port}"
+        self.auth_url = f"{self.base_url}/?code={self.passcode}" if self.passcode else self.base_url
+        if hasattr(self, "url_label"):
+            self.url_label.setText(self.base_url)
+        self._load_qr_code()
+        if hasattr(self, "btn_copy"):
+            self.btn_copy.setText("📋 URLをコピー")
+            self.btn_copy.setStyleSheet("")
+
     def _on_passcode_edited(self, text: str):
         self._apply_passcode(text.strip(), update_input=False)
 
@@ -235,10 +356,7 @@ class IpadDialog(QDialog):
         self.passcode = new_passcode
         if update_input and hasattr(self, "passcode_input"):
             self.passcode_input.setText(self.passcode)
-        self.auth_url = f"{self.base_url}/?code={self.passcode}" if self.passcode else self.base_url
-        self._load_qr_code()
-        self.btn_copy.setText("📋 URLをコピー")
-        self.btn_copy.setStyleSheet("")
+        self._update_urls()
 
         if self.server and hasattr(self.server, "set_passcode"):
             self.server.set_passcode(self.passcode)

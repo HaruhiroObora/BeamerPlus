@@ -10,6 +10,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtNetwork import QNetworkInterface, QAbstractSocket, QHostInfo
 import websockets
 from websockets.protocol import State
 
@@ -33,6 +34,117 @@ def get_local_ip() -> str:
     finally:
         s.close()
     return ip
+
+
+def get_network_interfaces() -> list[dict]:
+    """
+    接続可能なネットワークインターフェースのIPアドレスおよびホスト名の一覧を取得する。
+    戻り値: [{'display': '...', 'host': '...', 'is_default': bool}, ...]
+    """
+    primary_ip = get_local_ip()
+    hostname = ""
+    try:
+        hostname = QHostInfo.localHostName()
+    except Exception:
+        pass
+    if not hostname:
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = ""
+
+    valid_interfaces: list[tuple[str, str]] = []
+    loopback_interfaces: list[tuple[str, str]] = []
+
+    try:
+        for iface in QNetworkInterface.allInterfaces():
+            flags = iface.flags()
+            # 停止中のインターフェースは除外
+            if not (flags & QNetworkInterface.InterfaceFlag.IsUp):
+                continue
+
+            is_loopback = bool(flags & QNetworkInterface.InterfaceFlag.IsLoopBack)
+            raw_name = iface.humanReadableName() or iface.name()
+            name = raw_name.strip()
+
+            for entry in iface.addressEntries():
+                ip = entry.ip()
+                if ip.protocol() != QAbstractSocket.NetworkLayerProtocol.IPv4Protocol:
+                    continue
+                ip_str = ip.toString().strip()
+                if not ip_str or ip_str == "0.0.0.0":
+                    continue
+
+                if is_loopback or ip_str == "127.0.0.1":
+                    loopback_interfaces.append((ip_str, name))
+                else:
+                    valid_interfaces.append((ip_str, name))
+    except Exception as e:
+        print(f"[BeamerPlus] Error detecting network interfaces: {e}")
+
+    # primary_ip が取得できたが valid_interfaces に入っていない場合は追加
+    if primary_ip != "127.0.0.1" and not any(ip == primary_ip for ip, _ in valid_interfaces):
+        valid_interfaces.insert(0, (primary_ip, "LAN"))
+
+    results: list[dict] = []
+    seen_hosts: set[str] = set()
+
+    # 1. プライマリ（推奨）IPアドレス
+    for ip_str, name in valid_interfaces:
+        if ip_str == primary_ip:
+            label = f"{ip_str} (推奨: {name})" if name else f"{ip_str} (推奨)"
+            results.append({"display": label, "host": ip_str, "is_default": True})
+            seen_hosts.add(ip_str)
+            break
+
+    # 2. ドメイン / デバイス名 (mDNS: .local)
+    clean_host = hostname.strip()
+    if clean_host and clean_host.lower() not in ("localhost", "127.0.0.1", "0.0.0.0"):
+        if "." in clean_host:
+            mdns_host = clean_host
+        else:
+            mdns_host = f"{clean_host}.local"
+
+        if mdns_host not in seen_hosts:
+            results.append({
+                "display": f"{mdns_host} (デバイス名)",
+                "host": mdns_host,
+                "is_default": False
+            })
+            seen_hosts.add(mdns_host)
+
+    # 3. その他の有効なインターフェース
+    for ip_str, name in valid_interfaces:
+        if ip_str in seen_hosts:
+            continue
+        label = f"{ip_str} ({name})" if name else ip_str
+        results.append({"display": label, "host": ip_str, "is_default": False})
+        seen_hosts.add(ip_str)
+
+    # 4. ループバック (ローカルホスト)
+    for ip_str, name in loopback_interfaces:
+        if ip_str in seen_hosts:
+            continue
+        results.append({
+            "display": f"{ip_str} (ローカル)",
+            "host": ip_str,
+            "is_default": False
+        })
+        seen_hosts.add(ip_str)
+
+    # 何も取れなかった場合のフォールバック
+    if not results:
+        results.append({
+            "display": "127.0.0.1 (ローカル)",
+            "host": "127.0.0.1",
+            "is_default": True
+        })
+
+    # is_default がどれにも設定されていない場合は先頭をデフォルトにする
+    if not any(r["is_default"] for r in results):
+        results[0]["is_default"] = True
+
+    return results
 
 
 # --- iPad向け Web アプリケーション (HTML / CSS / JavaScript) ---
