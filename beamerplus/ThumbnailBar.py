@@ -86,9 +86,9 @@ class ThumbnailBar(QWidget):
         self.setFixedHeight(140)
         self.setStyleSheet("background-color: #1e1e1e;")
 
-        self.main_layout = QHBoxLayout(self)
-        self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_layout.setSpacing(0)
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         self.scroll_area = ThumbnailScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
@@ -110,15 +110,11 @@ class ThumbnailBar(QWidget):
         self.container_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         self.scroll_area.setWidget(self.container)
-        self.main_layout.addWidget(self.scroll_area)
+        main_layout.addWidget(self.scroll_area)
 
         # スクロールエリアとコンテナにイベントフィルタを設定（ホイール操作を確実に補足）
         self.scroll_area.viewport().installEventFilter(self)
         self.container.installEventFilter(self)
-
-    def set_left_indent(self, indent: int):
-        """左端タブボタン等との干渉を避けるための左側余白を設定"""
-        self.main_layout.setContentsMargins(indent, 0, 0, 0)
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.Wheel:

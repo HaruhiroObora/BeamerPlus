@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt, QTimer, QTime, QEvent, QByteArray, QBuffer, QIODe
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QFileDialog, QMessageBox, QToolBar, QPushButton, QLabel, QFrame,
-    QApplication
+    QApplication, QSizePolicy
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPainter, QColor, QPen, QBrush, QFont, QPixmap
 
@@ -41,12 +41,48 @@ class MainWindow(QMainWindow):
         self.elapsed_timer.timeout.connect(self._update_timer)
         self.presentation_time = QTime(0, 0, 0)
 
-        # メインレイアウト
+        # メインレイアウト（水平: 左端に引き出しボタン、右側にスライドやスライド一覧）
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        self.main_layout = QVBoxLayout(central_widget)
+        self.root_hlayout = QHBoxLayout(central_widget)
+        self.root_hlayout.setContentsMargins(0, 0, 0, 0)
+        self.root_hlayout.setSpacing(0)
+
+        # 0. ウィンドウ左端: しおり引き出しボタン（オーバーレイと同じ高さの縦長ボタン）
+        self.btn_sidebar_drawer = QPushButton(">")
+        self.btn_sidebar_drawer.setObjectName("SidebarDrawerBtn")
+        self.btn_sidebar_drawer.setFixedWidth(20)
+        self.btn_sidebar_drawer.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.btn_sidebar_drawer.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_sidebar_drawer.setToolTip("しおり / 目次を開く (Ctrl+B)")
+        self.btn_sidebar_drawer.setStyleSheet(
+            "QPushButton#SidebarDrawerBtn {"
+            "  background-color: #252526;"
+            "  color: #888888;"
+            "  border: none;"
+            "  border-right: 1px solid #333336;"
+            "  font-size: 13px;"
+            "  font-weight: bold;"
+            "  padding: 0px;"
+            "}"
+            "QPushButton#SidebarDrawerBtn:hover {"
+            "  background-color: #2d2d30;"
+            "  color: #007acc;"
+            "}"
+            "QPushButton#SidebarDrawerBtn:pressed {"
+            "  background-color: #1e1e1e;"
+            "}"
+        )
+        self.btn_sidebar_drawer.clicked.connect(self.toggle_bookmark_drawer)
+        self.btn_sidebar_drawer.hide()  # 初期状態（PDF未ロードまたはしおり無し）は非表示
+        self.root_hlayout.addWidget(self.btn_sidebar_drawer)
+
+        # メインコンテンツコンテナ（スライド操作領域 ＋ スライド一覧バー）
+        main_content_container = QWidget()
+        self.main_layout = QVBoxLayout(main_content_container)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
+        self.root_hlayout.addWidget(main_content_container, 1)
 
         # 中央スプリッター (左: スライド画面＋ツールバー, 右: ノートパネル)
         self.center_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -80,7 +116,9 @@ class MainWindow(QMainWindow):
 
         # 4. しおり（目次）引き出しオーバーレイ
         self.bookmark_drawer = BookmarkDrawer(central_widget)
+        self.bookmark_drawer.set_trigger_widget(self.btn_sidebar_drawer)
         self.bookmark_drawer.page_selected.connect(self.controller.set_page)
+        self.bookmark_drawer.drawer_state_changed.connect(self._on_bookmark_drawer_state_changed)
 
         # コントローラからのシグナル受信
         self.controller.page_changed.connect(self._on_page_changed)
@@ -353,9 +391,15 @@ class MainWindow(QMainWindow):
         if hasattr(self, "bookmark_drawer"):
             self.bookmark_drawer.toggle_drawer()
 
+    def _on_bookmark_drawer_state_changed(self, is_open: bool):
+        if not is_open:
+            if hasattr(self, "slide_view") and hasattr(self.slide_view, "canvas"):
+                self.slide_view.canvas.update()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "bookmark_drawer"):
+            self.bookmark_drawer.set_sidebar_offset(0)
             self.bookmark_drawer.update_layout()
 
     def toggle_main_toolbar(self):
@@ -443,11 +487,13 @@ class MainWindow(QMainWindow):
             self.controller.set_total_pages(len(self.pdf_reader))
             self.note_panel.set_pdf_reader(self.pdf_reader)
             self.thumbnail_bar.load_pdf(self.pdf_reader)
-            self.bookmark_drawer.load_pdf(self.pdf_reader)
             has_toc = self.pdf_reader.has_toc
-            self.thumbnail_bar.set_left_indent(34 if has_toc else 0)
+            self.btn_sidebar_drawer.setVisible(has_toc)
+            self.btn_sidebar_drawer.setText(">")
             self.btn_toggle_bookmarks.setEnabled(has_toc)
             self.act_toggle_bookmarks.setEnabled(has_toc)
+            self.bookmark_drawer.set_sidebar_offset(0)
+            self.bookmark_drawer.load_pdf(self.pdf_reader)
             self.setWindowTitle(f"BeamerPlus 発表者ビュー - {os.path.basename(path)}")
 
             # 最初のページを表示

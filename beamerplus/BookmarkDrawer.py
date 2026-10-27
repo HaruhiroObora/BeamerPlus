@@ -1,81 +1,53 @@
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QPoint, QEvent, QRect
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QLineEdit, QTreeWidget, QTreeWidgetItem, QFrame, QGraphicsDropShadowEffect,
-    QHeaderView, QApplication
+    QWidget, QFrame, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QLineEdit, QTreeWidget, QTreeWidgetItem, QHeaderView, QApplication
 )
 from PySide6.QtGui import QColor
 
 from beamerplus.PdfReader import PdfReader
 
 
-class BookmarkDrawer(QWidget):
+class BookmarkDrawer(QFrame):
     """PDFのしおり（目次/TOC）を用いてページを素早く移動するための
-    左側引き出しオーバーレイウィジェット。"""
+    左側引き出しオーバーレイウィジェット。
+    影や半透明を使わず、不透明な背景（#252526）を確実に描画して高視認性を確保。"""
 
     page_selected = Signal(int)
+    drawer_state_changed = Signal(bool)
 
     PANEL_WIDTH = 300
-    TAB_WIDTH = 26
-    TAB_HEIGHT = 56
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.is_open: bool = False
         self.has_bookmarks: bool = False
         self.current_page_idx: int = 0
+        self.sidebar_offset: int = 0
+        self.trigger_widget: QWidget | None = None
+        self._suppress_next_release: bool = False
 
-        # 全体サイズ設定（パネル部 + 右端の引き出しタブ部）
-        self.total_width = self.PANEL_WIDTH + self.TAB_WIDTH
-        self.setFixedWidth(self.total_width)
-
-        # 背景全体は透明にし、パネル部分とタブ部分のみ描画
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-        # 1. パネル部分（目次本体コンテナ）
-        self.panel = QFrame(self)
-        self.panel.setGeometry(0, 0, self.PANEL_WIDTH, self.height())
-        self.panel.setStyleSheet(
-            "QFrame#BookmarkPanel {"
+        self.setFixedWidth(self.PANEL_WIDTH)
+        self.setObjectName("BookmarkDrawer")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "QFrame#BookmarkDrawer {"
             "  background-color: #252526;"
-            "  border-right: 1px solid #3e3e42;"
+            "  border-right: 2px solid #3e3e42;"
             "}"
         )
-        self.panel.setObjectName("BookmarkPanel")
 
-        # ドロップシャドウ効果（引き出したときのみ有効化）
-        self.shadow = QGraphicsDropShadowEffect(self)
-        self.shadow.setBlurRadius(15)
-        self.shadow.setColor(QColor(0, 0, 0, 160))
-        self.shadow.setOffset(4, 0)
-        self.shadow.setEnabled(False)  # 引き出されていない時は無効化（UIマスク防止）
-        self.panel.setGraphicsEffect(self.shadow)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
-        panel_layout = QVBoxLayout(self.panel)
-        panel_layout.setContentsMargins(10, 10, 10, 10)
-        panel_layout.setSpacing(8)
-
-        # ヘッダー領域
+        # ヘッダー領域（しまう用ボタンは置かず、タイトルのみ表示）
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        
         lbl_title = QLabel("📑 しおり / 目次")
         lbl_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #ffffff;")
         header_layout.addWidget(lbl_title)
-        
-        header_layout.addStretch()
-
-        self.btn_close = QPushButton("✕")
-        self.btn_close.setFixedSize(22, 22)
-        self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_close.setToolTip("閉じる (Esc)")
-        self.btn_close.setStyleSheet(
-            "QPushButton { background: transparent; color: #888888; border: none; font-size: 12px; border-radius: 3px; }"
-            "QPushButton:hover { background: #3e3e42; color: #ffffff; }"
-        )
-        self.btn_close.clicked.connect(self.close_drawer)
-        header_layout.addWidget(self.btn_close)
-        panel_layout.addLayout(header_layout)
+        layout.addLayout(header_layout)
 
         # 検索バー
         self.search_edit = QLineEdit()
@@ -93,7 +65,7 @@ class BookmarkDrawer(QWidget):
             "QLineEdit:focus { border-color: #007acc; }"
         )
         self.search_edit.textChanged.connect(self._filter_tree)
-        panel_layout.addWidget(self.search_edit)
+        layout.addWidget(self.search_edit)
 
         # ツリーウィジェット
         self.tree = QTreeWidget()
@@ -128,37 +100,11 @@ class BookmarkDrawer(QWidget):
         self.tree.setColumnWidth(1, 52)
 
         self.tree.itemClicked.connect(self._on_item_clicked)
-        panel_layout.addWidget(self.tree, 1)
+        layout.addWidget(self.tree, 1)
 
-        # 2. 引き出しタブボタン（パネルの右端に突き出る形状、左から引き出せることを示す「>」）
-        self.tab_button = QPushButton(">", self)
-        self.tab_button.setObjectName("DrawerTabBtn")
-        self.tab_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.tab_button.setToolTip("しおり / 目次を開く (Ctrl+B)")
-        self.tab_button.setStyleSheet(
-            "QPushButton#DrawerTabBtn {"
-            "  background-color: rgba(45, 45, 48, 0.95);"
-            "  color: #cccccc;"
-            "  border: 1px solid #3e3e42;"
-            "  border-left: none;"
-            "  border-bottom: none;"
-            "  border-top-right-radius: 6px;"
-            "  border-bottom-right-radius: 0px;"
-            "  font-size: 14px;"
-            "  font-weight: bold;"
-            "  padding: 0px;"
-            "}"
-            "QPushButton#DrawerTabBtn:hover {"
-            "  background-color: #007acc;"
-            "  color: #ffffff;"
-            "  border-color: #0098ff;"
-            "}"
-        )
-        self.tab_button.clicked.connect(self.toggle_drawer)
-
-        # アニメーション初期化
+        # アニメーション初期化（機敏な150ms）
         self.animation = QPropertyAnimation(self, b"pos")
-        self.animation.setDuration(220)
+        self.animation.setDuration(150)
         self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.finished.connect(self._on_animation_finished)
 
@@ -169,20 +115,24 @@ class BookmarkDrawer(QWidget):
         # 初期状態は非表示（PDF未ロード状態）
         self.hide()
 
-    def update_layout(self):
-        """親ウィジェットの高さに合わせて自身とパネルの高さを調整し、タブ位置をウィンドウ最下部に配置"""
-        h = self.parent().height() if self.parent() else self.height()
-        if h <= 0:
-            return
-        self.setFixedHeight(h)
-        self.panel.setGeometry(0, 0, self.PANEL_WIDTH, h)
+    def set_trigger_widget(self, widget: QWidget):
+        """左端の引き出しボタン（トリガーウィジェット）を登録"""
+        self.trigger_widget = widget
 
-        # タブボタンの縦位置: ウィンドウ最下部
-        tab_y = max(0, h - self.TAB_HEIGHT)
-        self.tab_button.setGeometry(self.PANEL_WIDTH, tab_y, self.TAB_WIDTH, self.TAB_HEIGHT)
+    def set_sidebar_offset(self, offset: int):
+        """引き出しボタンの幅によるオフセットを設定"""
+        self.sidebar_offset = offset
+        self.update_layout()
+
+    def update_layout(self):
+        """親ウィジェットの高さに合わせて自身の高さを調整"""
+        if not self.parent():
+            return
+        h = self.parent().height()
+        self.setFixedHeight(h)
 
         # 開閉状態に応じたX位置
-        target_x = 0 if self.is_open else -self.PANEL_WIDTH
+        target_x = self.sidebar_offset if self.is_open else (-self.PANEL_WIDTH - 20)
         if not self.animation.state() == QPropertyAnimation.State.Running:
             self.move(target_x, 0)
 
@@ -193,19 +143,19 @@ class BookmarkDrawer(QWidget):
 
         if not reader or not reader.has_toc:
             self.has_bookmarks = False
+            self.is_open = False
             self.hide()
+            self.drawer_state_changed.emit(False)
             return
 
         self.has_bookmarks = True
         self._populate_tree(reader.toc)
 
-        # しおりが存在する場合は初期位置（折りたたまれた状態）で表示
+        # 初期状態は折りたたんで非表示
         self.is_open = False
-        self.tab_button.setText(">")
-        self.tab_button.setToolTip("しおり / 目次を開く (Ctrl+B)")
+        self.drawer_state_changed.emit(False)
         self.update_layout()
-        self.show()
-        self.raise_()
+        self.hide()
 
     def _populate_tree(self, toc_items: list[tuple[int, str, int]]):
         """スタック構造を用いて階層ツリーを構築"""
@@ -236,7 +186,7 @@ class BookmarkDrawer(QWidget):
         page_idx = item.data(0, Qt.ItemDataRole.UserRole)
         if page_idx is not None and isinstance(page_idx, int):
             self.page_selected.emit(page_idx)
-            # ページ選択後はプレゼンに集中できるようスムーズに閉じる
+            # ページ選択後はスムーズに閉じる
             self.close_drawer()
 
     def highlight_current_page(self, current_page_idx: int):
@@ -300,11 +250,10 @@ class BookmarkDrawer(QWidget):
         if not self.has_bookmarks or self.is_open:
             return
         self.is_open = True
-        self.tab_button.setText("<")
-        self.tab_button.setToolTip("しおり / 目次を閉じる (Esc, Ctrl+B)")
-        self.shadow.setEnabled(True)  # 引き出したときに影を有効化
+        self.drawer_state_changed.emit(True)
+        self.show()
         self.raise_()
-        self._animate_to(0)
+        self._animate_to(self.sidebar_offset)
         self.search_edit.setFocus()
         app = QApplication.instance()
         if app:
@@ -314,17 +263,18 @@ class BookmarkDrawer(QWidget):
         if not self.has_bookmarks or not self.is_open:
             return
         self.is_open = False
-        self.tab_button.setText(">")
-        self.tab_button.setToolTip("しおり / 目次を開く (Ctrl+B)")
-        self._animate_to(-self.PANEL_WIDTH)
+        self.drawer_state_changed.emit(False)
+        self._animate_to(-self.PANEL_WIDTH - 20)
         app = QApplication.instance()
         if app:
             app.removeEventFilter(self)
 
     def _on_animation_finished(self):
-        # 完全に閉じた後は影エフェクトを無効化してUIマスクを完全に防止
+        """アニメーション終了時のクリーンアップ処理（完全非表示＆即時再描画）"""
         if not self.is_open:
-            self.shadow.setEnabled(False)
+            self.hide()
+            if self.parent():
+                self.parent().update()
 
     def _animate_to(self, target_x: int):
         self.animation.stop()
@@ -332,17 +282,8 @@ class BookmarkDrawer(QWidget):
         self.animation.setEndValue(QPoint(target_x, 0))
         self.animation.start()
 
-    def mousePressEvent(self, event):
-        """引き出されていない時はタブボタン以外の領域をクリックしても背後へイベントを透過"""
-        if not self.is_open:
-            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-            if not self.tab_button.geometry().contains(pos):
-                event.ignore()
-                return
-        super().mousePressEvent(event)
-
     def eventFilter(self, watched, event: QEvent) -> bool:
-        """親ウィジェットのリサイズ追従、外側クリック検知、およびEscキー処理"""
+        """親ウィジェットのリサイズ追従、外側クリック検知（スライド進行の抑制）、およびEscキー処理"""
         if watched == self.parent() and event.type() == QEvent.Type.Resize:
             self.update_layout()
             return False
@@ -356,15 +297,25 @@ class BookmarkDrawer(QWidget):
                     pos = event.globalPos()
 
                 if pos is not None:
+                    # 自ウィジェット（オーバーレイ）領域のグローバル矩形
                     global_top_left = self.mapToGlobal(QPoint(0, 0))
                     global_rect = QRect(global_top_left, self.size())
+
+                    # オーバーレイ外をクリックされた場合:
+                    # ドロワーを即座にしまい、クリックイベントを消費して背後への伝播を防止
                     if not global_rect.contains(pos):
+                        self._suppress_next_release = True
                         self.close_drawer()
-                        return False
+                        return True
 
             elif event.type() == QEvent.Type.KeyPress:
                 if event.key() == Qt.Key.Key_Escape:
                     self.close_drawer()
                     return True
+
+        elif self._suppress_next_release:
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                self._suppress_next_release = False
+                return True
 
         return super().eventFilter(watched, event)
