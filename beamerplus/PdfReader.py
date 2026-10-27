@@ -1,6 +1,7 @@
 import os.path
 import json
 import re
+from dataclasses import dataclass, field
 
 import pymupdf
 
@@ -55,22 +56,91 @@ def _decode_page_label(label: str) -> str:
     return label
 
 
+@dataclass
+class PageGroup:
+    group_index: int
+    label: str
+    page_indices: list[int] = field(default_factory=list)
+
+
+def compute_page_groups(page_labels: list[str]) -> list[PageGroup]:
+    """
+    ページラベルに基づいて、隣接する同一ラベル（非空文字列）を持つページをグループ化する。
+    ラベルが空文字の場合は単一ページとして扱い、離れた場所にある同名ラベルはまとめない。
+    """
+    groups: list[PageGroup] = []
+    if not page_labels:
+        return groups
+
+    current_group_pages = [0]
+    current_label = page_labels[0].strip() if page_labels[0] else ""
+
+    for i in range(1, len(page_labels)):
+        lbl = page_labels[i].strip() if page_labels[i] else ""
+        if lbl and lbl == current_label:
+            current_group_pages.append(i)
+        else:
+            groups.append(PageGroup(
+                group_index=len(groups),
+                label=current_label,
+                page_indices=current_group_pages
+            ))
+            current_group_pages = [i]
+            current_label = lbl
+
+    if current_group_pages:
+        groups.append(PageGroup(
+            group_index=len(groups),
+            label=current_label,
+            page_indices=current_group_pages
+        ))
+
+    return groups
+
+
 class PdfReader:
     def __init__(self, path: str):
         self.path = path
         self.note_path = path + ".json"
         try:
             self.document = pymupdf.open(self.path)
-            if os.path.exists(self.note_path):
-                with open(self.note_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.notes: dict[int, str] = {int(k): v for k, v in data.items()}
-            else:
-                self.notes: dict[int, str] = {}
         except Exception as e:
             raise e
         
         self.page_labels = [_decode_page_label(page.get_label()) for page in self.document]
+        self.page_groups = compute_page_groups(self.page_labels)
+        self.page_to_group: dict[int, PageGroup] = {
+            p: g for g in self.page_groups for p in g.page_indices
+        }
+        self.page_to_canonical: dict[int, int] = {
+            p: g.page_indices[0] for g in self.page_groups for p in g.page_indices
+        }
+        self._compute_group_keys()
+
+        # ノート読み込み（新形式: version=2 ヘッダ付き / 旧形式: ヘッダなし 0-based インデックス）
+        self.notes: dict[str, str] = {}
+        if os.path.exists(self.note_path):
+            try:
+                with open(self.note_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        # 1. 新形式（ヘッダ: version=2）の場合: notes 辞書のキーはページラベル
+                        if data.get("version") == 2 and "notes" in data and isinstance(data["notes"], dict):
+                            self.notes = {str(k): str(v) for k, v in data["notes"].items()}
+                        # 2. 旧形式（ヘッダなし）の場合: キーは 0-based ページインデックス
+                        else:
+                            for k, v in data.items():
+                                try:
+                                    idx = int(k)
+                                    if 0 <= idx < len(self.document):
+                                        label_key = self.get_page_label_key(idx)
+                                        if label_key not in self.notes or not self.notes[label_key]:
+                                            self.notes[label_key] = str(v)
+                                except (ValueError, TypeError):
+                                    pass
+            except Exception:
+                self.notes = {}
+
         self._image_cache: dict[tuple[int, int, bool], QPixmap] = {}
 
         # しおり（目次）の抽出: [(lvl, title, page_idx), ...]
@@ -140,11 +210,48 @@ class PdfReader:
             return None
         return self.document[idx]
 
-    def get_note(self, index: str | int) -> str | None:
+    def _compute_group_keys(self):
+        """各グループの一意なラベルキーを計算（単一のものはlabelそのもの、重複がある場合はページ番号等で識別）"""
+        self.group_keys: dict[int, str] = {}
+        label_seen: dict[str, int] = {}
+        for group in self.page_groups:
+            lbl = group.label if group.label else str(group.page_indices[0] + 1)
+            count = label_seen.get(lbl, 0) + 1
+            label_seen[lbl] = count
+            if count == 1:
+                self.group_keys[group.group_index] = lbl
+            else:
+                self.group_keys[group.group_index] = f"{lbl} (p.{group.page_indices[0] + 1})"
+
+    def get_page_label_key(self, index: int) -> str:
+        """指定ページのノート保存用ラベルキーを取得"""
+        group = self.page_to_group.get(index)
+        if group and group.group_index in self.group_keys:
+            return self.group_keys[group.group_index]
+        if 0 <= index < len(self.page_labels) and self.page_labels[index]:
+            return self.page_labels[index]
+        return str(index + 1)
+
+    def get_group_for_page(self, index: str | int) -> PageGroup | None:
         idx = self._resolve_index(index)
         if idx is None:
             return None
-        return self.notes.get(idx, "")
+        return self.page_to_group.get(idx)
+
+    def get_canonical_page_index(self, index: str | int) -> int | None:
+        idx = self._resolve_index(index)
+        if idx is None:
+            return None
+        return self.page_to_canonical.get(idx, idx)
+
+    def get_note(self, index: str | int) -> str | None:
+        idx = self._resolve_index(index)
+        if idx is not None:
+            key = self.get_page_label_key(idx)
+            return self.notes.get(key, "")
+        elif isinstance(index, str):
+            return self.notes.get(index, "")
+        return None
 
     def is_dual_screen_page(self, index: str | int) -> bool:
         """ページが左右または上下の2画面（スライド＋ノート）形式か判定"""
@@ -199,14 +306,20 @@ class PdfReader:
 
     def save_note(self, index: str | int, note: str) -> None:
         idx = self._resolve_index(index)
-        if idx is None:
-            return
-        self.notes[idx] = note
+        if idx is not None:
+            key = self.get_page_label_key(idx)
+            self.notes[key] = note
+        elif isinstance(index, str):
+            self.notes[index] = note
 
     def save_note_to_file(self) -> None:
         try:
+            payload = {
+                "version": 2,
+                "notes": self.notes
+            }
             with open(self.note_path, "w", encoding="utf-8") as f:
-                json.dump(self.notes, f, indent=2, ensure_ascii=False)
+                json.dump(payload, f, indent=2, ensure_ascii=False)
         except Exception as e:
             raise e
 

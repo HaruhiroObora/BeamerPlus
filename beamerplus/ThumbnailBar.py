@@ -27,10 +27,20 @@ class ThumbnailScrollArea(QScrollArea):
 class ThumbnailItem(QFrame):
     clicked = Signal(int)
 
-    def __init__(self, index: int, label_text: str, pixmap: QPixmap, parent: QWidget | None = None):
+    def __init__(
+        self,
+        group_index: int,
+        page_indices: list[int],
+        base_label: str,
+        pixmap: QPixmap,
+        parent: QWidget | None = None
+    ):
         super().__init__(parent)
-        self.index = index
+        self.group_index = group_index
+        self.page_indices = page_indices
+        self.base_label = base_label
         self.is_selected = False
+        self.has_multiple_pages = len(page_indices) > 1
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setObjectName("ThumbnailItem")
@@ -44,16 +54,30 @@ class ThumbnailItem(QFrame):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.image_label)
 
-        self.caption_label = QLabel(label_text)
+        self.caption_label = QLabel()
         self.caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.caption_label.setStyleSheet("font-size: 11px; color: #d0d0d0;")
         layout.addWidget(self.caption_label)
 
+        self._update_caption(current_page_idx=None)
         self.update_style()
 
-    def set_selected(self, selected: bool):
-        if self.is_selected != selected:
-            self.is_selected = selected
+    def _update_caption(self, current_page_idx: int | None = None):
+        if not self.has_multiple_pages:
+            self.caption_label.setText(self.base_label)
+            return
+
+        total_sub = len(self.page_indices)
+        if current_page_idx is not None and current_page_idx in self.page_indices:
+            sub_idx = self.page_indices.index(current_page_idx) + 1
+            self.caption_label.setText(f"{self.base_label} ({sub_idx}/{total_sub})")
+        else:
+            self.caption_label.setText(f"{self.base_label} ({total_sub}枚)")
+
+    def set_selected(self, selected: bool, current_page_idx: int | None = None):
+        state_changed = (self.is_selected != selected)
+        self.is_selected = selected
+        self._update_caption(current_page_idx if selected else None)
+        if state_changed or selected:
             self.update_style()
 
     def update_style(self):
@@ -61,7 +85,7 @@ class ThumbnailItem(QFrame):
             self.setStyleSheet(
                 "#ThumbnailItem { border: 2px solid #007acc; border-radius: 4px; background-color: #2a2d32; }"
             )
-            self.caption_label.setStyleSheet("font-size: 11px; color: #4fc3f7;")
+            self.caption_label.setStyleSheet("font-size: 11px; color: #4fc3f7; font-weight: bold;")
         else:
             self.setStyleSheet(
                 "#ThumbnailItem { border: 2px solid transparent; border-radius: 4px; background-color: transparent; }"
@@ -71,7 +95,8 @@ class ThumbnailItem(QFrame):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.index)
+            # 先頭サブページ（グループの開始ページ）へ遷移
+            self.clicked.emit(self.page_indices[0])
         super().mousePressEvent(event)
 
 
@@ -129,16 +154,20 @@ class ThumbnailBar(QWidget):
     def load_pdf(self, reader: PdfReader):
         self.clear()
         target_size = QSize(140, 95)
-        for i in range(len(reader)):
-            pix = reader.get_page_image(i, auto_crop=True, size=target_size, dpi=72)
+        for group in reader.page_groups:
+            # 代表サムネイル画像は完全な内容が表示されているグループの最終サブページ
+            rep_page_idx = group.page_indices[-1]
+            pix = reader.get_page_image(rep_page_idx, auto_crop=True, size=target_size, dpi=72)
             if pix is None:
                 continue
-            label_text = f"{i + 1}"
-            if i < len(reader.page_labels) and reader.page_labels[i]:
-                lbl = reader.page_labels[i].strip()
-                if lbl and lbl != str(i + 1):
-                    label_text = f"{i + 1} ({lbl})"
-            item = ThumbnailItem(i, label_text, pix)
+
+            base_lbl = group.label if group.label else str(group.page_indices[0] + 1)
+            item = ThumbnailItem(
+                group_index=group.group_index,
+                page_indices=group.page_indices,
+                base_label=base_lbl,
+                pixmap=pix
+            )
             item.clicked.connect(self._on_item_clicked)
 
             # サムネイルアイテム及びその内部ラベル上でもホイールイベントを確実に拾う
@@ -156,18 +185,22 @@ class ThumbnailBar(QWidget):
         self.page_selected.emit(index)
 
     def set_current_page(self, index: int):
-        if not (0 <= index < len(self.items)):
-            return
         self.current_index = index
-        for i, item in enumerate(self.items):
-            item.set_selected(i == index)
+        matched_item = None
+        for item in self.items:
+            is_match = (index in item.page_indices)
+            item.set_selected(is_match, current_page_idx=index)
+            if is_match:
+                matched_item = item
 
-        self.ensure_visible(index)
+        if matched_item:
+            self.scroll_area.ensureWidgetVisible(matched_item, 50, 0)
 
     def ensure_visible(self, index: int):
-        if 0 <= index < len(self.items):
-            item = self.items[index]
-            self.scroll_area.ensureWidgetVisible(item, 50, 0)
+        for item in self.items:
+            if index in item.page_indices:
+                self.scroll_area.ensureWidgetVisible(item, 50, 0)
+                break
 
     def clear(self):
         self.items.clear()

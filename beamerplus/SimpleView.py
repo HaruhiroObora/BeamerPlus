@@ -374,7 +374,18 @@ class SimpleView(QWidget):
     def set_pixmap(self, pixmap: QPixmap | None):
         self.canvas.set_pixmap(pixmap)
 
-    def update_page_info(self, current: int, total: int):
-        self.page_label.setText(f"{current + 1} / {total}")
+    def update_page_info(
+        self,
+        current: int,
+        total: int,
+        frame_label: str | None = None,
+        sub_step: tuple[int, int] | None = None
+    ):
+        if sub_step is not None:
+            sub_idx, sub_total = sub_step
+            lbl = frame_label if frame_label else str(current + 1)
+            self.page_label.setText(f"{lbl} ({sub_idx}/{sub_total}) [{current + 1}/{total}]")
+        else:
+            self.page_label.setText(f"{current + 1} / {total}")
         self.btn_prev.setEnabled(current > 0)
         self.btn_next.setEnabled(current < total - 1)

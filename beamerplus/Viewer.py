@@ -113,7 +113,7 @@ class Viewer(QMainWindow):
             return True
         if self.controller.is_sketchbook:
             return page_index == -1
-        return page_index == self.controller.current_page
+        return self.controller.get_canonical_page(page_index) == self.controller.get_canonical_page(self.controller.current_page)
 
     def _setup_pointer_item(self):
         """スライド解像度とコントローラ設定に応じたポインタアイテムのサイズとグラデーションを更新"""

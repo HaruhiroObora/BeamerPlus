@@ -258,15 +258,22 @@ class NotePanel(QWidget):
 
         # ユーザー手動ノート読み込み
         manual_note = ""
-        if self.pdf_reader and index in self.pdf_reader.notes:
-            manual_note = self.pdf_reader.notes[index]
+        if self.pdf_reader:
+            manual_note = self.pdf_reader.get_note(index) or ""
 
         # エディタの初期テキスト
         self.editor.blockSignals(True)
         self.editor.setPlainText(manual_note)
         self.editor.blockSignals(False)
 
-        self.lbl_page_note.setText(f"スライド {index + 1}")
+        group = self.pdf_reader.get_group_for_page(index) if self.pdf_reader else None
+        if group and len(group.page_indices) > 1:
+            sub_idx = group.page_indices.index(index) + 1
+            lbl = group.label if group.label else str(index + 1)
+            self.lbl_page_note.setText(f"スライド {lbl} ({sub_idx}/{len(group.page_indices)})")
+        else:
+            lbl = group.label if (group and group.label) else str(index + 1)
+            self.lbl_page_note.setText(f"スライド {lbl}")
         self.save_status_label.setText("")
 
         # ビュー状態の復元

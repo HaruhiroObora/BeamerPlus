@@ -267,6 +267,15 @@ class PresentationController(QObject):
         self.pen_opacity: float = 0.85
         self.highlighter_opacity: float = 0.28     # 蛍光ペンの不透明度（透明度72%: 文字がクリアに透けて見える設定）
 
+        # ページ正規化（Beamer \pause の同一フレーム集約用写像: 物理ページ -> canonicalページ）
+        self.page_mapping: dict[int, int] = {}
+
+    def set_page_mapping(self, mapping: dict[int, int] | None):
+        self.page_mapping = mapping or {}
+
+    def get_canonical_page(self, page_index: int) -> int:
+        return self.page_mapping.get(page_index, page_index)
+
     def set_total_pages(self, total: int):
         self.total_pages = total
 
@@ -412,13 +421,14 @@ class PresentationController(QObject):
             self.stroke_started.emit(-1, stroke)
             return
 
-        if self.current_page not in self.page_strokes:
-            self.page_strokes[self.current_page] = []
-        self.page_strokes[self.current_page].append(stroke)
+        target_page = self.get_canonical_page(self.current_page)
+        if target_page not in self.page_strokes:
+            self.page_strokes[target_page] = []
+        self.page_strokes[target_page].append(stroke)
 
-        if self.current_page not in self.page_history:
-            self.page_history[self.current_page] = []
-        self.page_history[self.current_page].append(("stroke", stroke))
+        if target_page not in self.page_history:
+            self.page_history[target_page] = []
+        self.page_history[target_page].append(("stroke", stroke))
 
         self.stroke_started.emit(self.current_page, stroke)
 
@@ -456,13 +466,14 @@ class PresentationController(QObject):
             self.text_added.emit(-1, item)
             return item
 
-        if self.current_page not in self.page_texts:
-            self.page_texts[self.current_page] = []
-        self.page_texts[self.current_page].append(item)
+        target_page = self.get_canonical_page(self.current_page)
+        if target_page not in self.page_texts:
+            self.page_texts[target_page] = []
+        self.page_texts[target_page].append(item)
 
-        if self.current_page not in self.page_history:
-            self.page_history[self.current_page] = []
-        self.page_history[self.current_page].append(("text", item))
+        if target_page not in self.page_history:
+            self.page_history[target_page] = []
+        self.page_history[target_page].append(("text", item))
 
         self.text_added.emit(self.current_page, item)
         return item
@@ -471,7 +482,8 @@ class PresentationController(QObject):
         """指定ページの全テキストアイテムを取得"""
         if self.is_sketchbook:
             return self.sketchbook_texts
-        return self.page_texts.get(page_index, [])
+        target_page = self.get_canonical_page(page_index)
+        return self.page_texts.get(target_page, [])
 
     def erase_at_point(
         self,
@@ -539,8 +551,9 @@ class PresentationController(QObject):
                         erased_anything = True
             return erased_anything
 
-        has_strokes = self.current_page in self.page_strokes and bool(self.page_strokes[self.current_page])
-        has_texts = self.current_page in self.page_texts and bool(self.page_texts[self.current_page])
+        target_page = self.get_canonical_page(self.current_page)
+        has_strokes = target_page in self.page_strokes and bool(self.page_strokes[target_page])
+        has_texts = target_page in self.page_texts and bool(self.page_texts[target_page])
         if not has_strokes and not has_texts:
             return False
 
@@ -548,13 +561,13 @@ class PresentationController(QObject):
         if has_texts:
             remaining_texts = []
             text_erased = False
-            for t_item in self.page_texts[self.current_page]:
+            for t_item in self.page_texts[target_page]:
                 if text_intersects_circle(t_item, center, threshold, aspect_ratio):
                     text_erased = True
                 else:
                     remaining_texts.append(t_item)
             if text_erased:
-                self.page_texts[self.current_page] = remaining_texts
+                self.page_texts[target_page] = remaining_texts
                 self.texts_updated.emit(self.current_page)
                 erased_anything = True
 
@@ -564,13 +577,13 @@ class PresentationController(QObject):
                 # オブジェクト消しゴム（線分交差判定）
                 remaining_strokes = []
                 erased = False
-                for stroke in self.page_strokes[self.current_page]:
+                for stroke in self.page_strokes[target_page]:
                     if stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
                         erased = True
                     else:
                         remaining_strokes.append(stroke)
                 if erased:
-                    self.page_strokes[self.current_page] = remaining_strokes
+                    self.page_strokes[target_page] = remaining_strokes
                     self.strokes_updated.emit(self.current_page)
                     erased_anything = True
             else:
@@ -578,7 +591,7 @@ class PresentationController(QObject):
                 new_page_strokes: list[Stroke] = []
                 erased_any = False
 
-                for stroke in self.page_strokes[self.current_page]:
+                for stroke in self.page_strokes[target_page]:
                     if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
                         new_page_strokes.append(stroke)
                     else:
@@ -587,7 +600,7 @@ class PresentationController(QObject):
                         new_page_strokes.extend(clipped)
 
                 if erased_any:
-                    self.page_strokes[self.current_page] = new_page_strokes
+                    self.page_strokes[target_page] = new_page_strokes
                     self.strokes_updated.emit(self.current_page)
                     erased_anything = True
 
@@ -609,17 +622,18 @@ class PresentationController(QObject):
             self.sketchbook_history = []
             return
 
-        had_strokes = self.current_page in self.page_strokes and bool(self.page_strokes[self.current_page])
-        had_texts = self.current_page in self.page_texts and bool(self.page_texts[self.current_page])
+        target_page = self.get_canonical_page(self.current_page)
+        had_strokes = target_page in self.page_strokes and bool(self.page_strokes[target_page])
+        had_texts = target_page in self.page_texts and bool(self.page_texts[target_page])
 
         if had_strokes:
-            self.page_strokes[self.current_page] = []
+            self.page_strokes[target_page] = []
             self.strokes_cleared.emit(self.current_page)
         if had_texts:
-            self.page_texts[self.current_page] = []
+            self.page_texts[target_page] = []
             self.texts_updated.emit(self.current_page)
-        if self.current_page in self.page_history:
-            self.page_history[self.current_page] = []
+        if target_page in self.page_history:
+            self.page_history[target_page] = []
 
     def undo_current_page_stroke(self):
         if self.is_sketchbook:
@@ -638,18 +652,19 @@ class PresentationController(QObject):
                 self.stroke_undone.emit(-1)
             return
 
-        if self.current_page in self.page_history and self.page_history[self.current_page]:
-            kind, item = self.page_history[self.current_page].pop()
+        target_page = self.get_canonical_page(self.current_page)
+        if target_page in self.page_history and self.page_history[target_page]:
+            kind, item = self.page_history[target_page].pop()
             if kind == "stroke":
-                if self.current_page in self.page_strokes and item in self.page_strokes[self.current_page]:
-                    self.page_strokes[self.current_page].remove(item)
+                if target_page in self.page_strokes and item in self.page_strokes[target_page]:
+                    self.page_strokes[target_page].remove(item)
                     self.stroke_undone.emit(self.current_page)
             elif kind == "text":
-                if self.current_page in self.page_texts and item in self.page_texts[self.current_page]:
-                    self.page_texts[self.current_page].remove(item)
+                if target_page in self.page_texts and item in self.page_texts[target_page]:
+                    self.page_texts[target_page].remove(item)
                     self.texts_updated.emit(self.current_page)
-        elif self.current_page in self.page_strokes and self.page_strokes[self.current_page]:
-            self.page_strokes[self.current_page].pop()
+        elif target_page in self.page_strokes and self.page_strokes[target_page]:
+            self.page_strokes[target_page].pop()
             self.stroke_undone.emit(self.current_page)
 
     def undo(self):
@@ -663,4 +678,5 @@ class PresentationController(QObject):
     def get_strokes_for_page(self, page_index: int) -> list[Stroke]:
         if self.is_sketchbook:
             return self.sketchbook_strokes
-        return self.page_strokes.get(page_index, [])
+        target_page = self.get_canonical_page(page_index)
+        return self.page_strokes.get(target_page, [])

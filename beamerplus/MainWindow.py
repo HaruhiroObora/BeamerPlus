@@ -485,6 +485,7 @@ class MainWindow(QMainWindow):
         try:
             self.pdf_reader = PdfReader(path)
             self.controller.set_total_pages(len(self.pdf_reader))
+            self.controller.set_page_mapping(self.pdf_reader.page_to_canonical)
             self.note_panel.set_pdf_reader(self.pdf_reader)
             self.thumbnail_bar.load_pdf(self.pdf_reader)
             has_toc = self.pdf_reader.has_toc
@@ -529,7 +530,16 @@ class MainWindow(QMainWindow):
 
         # メインスライド表示領域（ツールバー＋キャンバス）更新
         self.slide_view.set_pixmap(current_pixmap)
-        self.slide_view.update_page_info(index, total)
+        group = self.pdf_reader.get_group_for_page(index)
+        sub_step = None
+        if group and len(group.page_indices) > 1:
+            sub_step = (group.page_indices.index(index) + 1, len(group.page_indices))
+        self.slide_view.update_page_info(
+            index,
+            total,
+            frame_label=group.label if group else None,
+            sub_step=sub_step
+        )
 
         # ノートパネル更新
         self.note_panel.set_page(index, next_pixmap)
@@ -757,14 +767,14 @@ class MainWindow(QMainWindow):
 
     def _get_strokes_data_for_page(self, page_idx: int) -> list[dict]:
         strokes_data = []
-        if page_idx in self.controller.page_strokes:
-            for s in self.controller.page_strokes[page_idx]:
-                strokes_data.append({
-                    "color": s.color,
-                    "width_ratio": s.width_ratio,
-                    "opacity": s.opacity,
-                    "points": s.points
-                })
+        strokes = self.controller.get_strokes_for_page(page_idx)
+        for s in strokes:
+            strokes_data.append({
+                "color": s.color,
+                "width_ratio": s.width_ratio,
+                "opacity": s.opacity,
+                "points": s.points
+            })
         return strokes_data
 
     def _get_web_status(self) -> dict:
