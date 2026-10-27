@@ -660,14 +660,18 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.KeyPress:
-            # ノートエディタ編集中やスライド上のテキスト入力中は通常の文字入力・カーソル移動を最優先
+            # モーダルダイアログ表示中、ノートエディタ編集中、テキスト入力中、しおり検索中は通常のキー操作を最優先
+            if QApplication.activeModalWidget() is not None:
+                return super().eventFilter(watched, event)
             if hasattr(self, "note_panel") and self.note_panel.editor.hasFocus():
                 return super().eventFilter(watched, event)
             if hasattr(self, "slide_view") and hasattr(self.slide_view, "canvas") and hasattr(self.slide_view.canvas, "text_input") and self.slide_view.canvas.text_input.hasFocus():
                 return super().eventFilter(watched, event)
+            if hasattr(self, "bookmark_drawer") and self.bookmark_drawer.search_edit.hasFocus():
+                return super().eventFilter(watched, event)
 
             key = event.key()
-            if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space):
+            if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.controller.next_page()
                 return True
             elif key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
@@ -690,9 +694,10 @@ class MainWindow(QMainWindow):
         # エディタ編集中やテキスト入力中でない場合のみページ送りショートカットを有効化
         is_typing = (
             (hasattr(self, "note_panel") and self.note_panel.editor.hasFocus()) or
-            (hasattr(self, "slide_view") and hasattr(self.slide_view, "canvas") and hasattr(self.slide_view.canvas, "text_input") and self.slide_view.canvas.text_input.hasFocus())
+            (hasattr(self, "slide_view") and hasattr(self.slide_view, "canvas") and hasattr(self.slide_view.canvas, "text_input") and self.slide_view.canvas.text_input.hasFocus()) or
+            (hasattr(self, "bookmark_drawer") and self.bookmark_drawer.search_edit.hasFocus())
         )
-        if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space):
+        if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if not is_typing:
                 self.controller.next_page()
                 return

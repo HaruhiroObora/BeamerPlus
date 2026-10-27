@@ -549,7 +549,7 @@ class Viewer(QMainWindow):
             if self.controller:
                 self.controller.toggle_sketch_visibility()
         elif self.controller:
-            if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space):
+            if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.controller.next_page()
             elif key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
                 self.controller.prev_page()
