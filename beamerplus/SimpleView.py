@@ -75,6 +75,7 @@ class SimpleView(QWidget):
         self.controller.color_changed.connect(self._on_color_changed)
         self.controller.eraser_mode_changed.connect(self._on_eraser_mode_changed)
         self.controller.sketch_visibility_changed.connect(self._on_sketch_visibility_changed)
+        self.controller.blank_state_changed.connect(self._on_blank_state_changed)
 
         # 初期表示の更新
         self._on_tool_changed(self.controller.current_tool)
@@ -381,11 +382,31 @@ class SimpleView(QWidget):
         frame_label: str | None = None,
         sub_step: tuple[int, int] | None = None
     ):
+        self._last_current = current
+        self._last_total = total
         if sub_step is not None:
             sub_idx, sub_total = sub_step
             lbl = frame_label if frame_label else str(current + 1)
             self.page_label.setText(f"{lbl} ({sub_idx}/{sub_total}) [{current + 1}/{total}]")
         else:
             self.page_label.setText(f"{current + 1} / {total}")
-        self.btn_prev.setEnabled(current > 0)
-        self.btn_next.setEnabled(current < total - 1)
+        self._update_nav_buttons(current, total)
+
+    def _update_nav_buttons(self, current: int | None = None, total: int | None = None):
+        if current is None:
+            current = getattr(self, "_last_current", self.controller.current_page)
+        if total is None:
+            total = getattr(self, "_last_total", self.controller.total_pages)
+
+        if total <= 0:
+            self.btn_prev.setEnabled(False)
+            self.btn_next.setEnabled(False)
+            return
+
+        can_prev = (current > 0) or self.controller.is_blank
+        can_next = (current < total - 1) or (not self.controller.is_blank)
+        self.btn_prev.setEnabled(can_prev)
+        self.btn_next.setEnabled(can_next)
+
+    def _on_blank_state_changed(self, is_blank: bool):
+        self._update_nav_buttons()

@@ -281,6 +281,8 @@ class PresentationController(QObject):
 
     def set_page(self, index: int):
         if self.total_pages > 0 and 0 <= index < self.total_pages:
+            if self.is_blank:
+                self.set_blank(False)
             if self.current_page != index:
                 self.current_page = index
                 self.pointer_updated.emit(0.0, 0.0, False, False)
@@ -289,9 +291,14 @@ class PresentationController(QObject):
     def next_page(self):
         if self.current_page < self.total_pages - 1:
             self.set_page(self.current_page + 1)
+        elif self.total_pages > 0 and self.current_page == self.total_pages - 1:
+            if not self.is_blank:
+                self.set_blank(True)
 
     def prev_page(self):
-        if self.current_page > 0:
+        if self.is_blank:
+            self.set_blank(False)
+        elif self.current_page > 0:
             self.set_page(self.current_page - 1)
 
     def set_tool(self, tool_name: str):
