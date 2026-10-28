@@ -85,12 +85,12 @@ pipx ensurepath
 Python アプリケーションをシステム環境から隔離してグローバルコマンドとしてインストールできます。
 
 ```bash
-pipx install git+https://github.com/HaruhiroObora/BeamerPlus.git
+pipx install git+https://github.com/lambda-haru/BeamerPlus.git
 ```
 
 #### pip を使う場合
 ```bash
-pip install git+https://github.com/HaruhiroObora/BeamerPlus.git
+pip install git+https://github.com/lambda-haru/BeamerPlus.git
 ```
 
 ---
